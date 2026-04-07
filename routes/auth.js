@@ -2,6 +2,9 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../models/db');
+const { sendMagicLink } = require('../utils/email');
+const { OAuth2Client } = require('google-auth-library');
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const router = express.Router();
 
@@ -9,9 +12,7 @@ router.post('/register', async (req, res) => {
     try {
         const { name, email, password } = req.body;
         
-        if (!email.endsWith('@alliance.edu.in')) {
-            return res.status(400).json({ message: 'Must use an @alliance.edu.in email' });
-        }
+        // Removed domain restriction as per user request
         
         const existing = await db.query('SELECT * FROM users WHERE email = $1', [email]);
         if (existing.rows.length > 0) {
@@ -56,6 +57,137 @@ router.post('/login', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// ─── MAGIC LINK AUTHENTICATION ───
+
+router.post('/magic-link', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email.toLowerCase().endsWith('alliance.edu.in')) {
+          return res.status(400).json({ message: 'Must use an authorized Alliance email (e.g. @alliance.edu.in or @ced.alliance.edu.in).' });
+        }
+
+        const magicToken = jwt.sign(
+          { email },
+          process.env.JWT_SECRET || 'secret',
+          { expiresIn: '15m' }
+        );
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        const magicLink = `${frontendUrl}/verify-email?token=${magicToken}`;
+
+        console.log('--- MAGIC LINK GENERATED ---');
+        console.log(`Email: ${email}`);
+        console.log(`Link: ${magicLink}`);
+        console.log('-----------------------------');
+
+        try {
+          await sendMagicLink(email, magicLink);
+          res.json({ message: 'Magic link sent! Check your inbox.' });
+        } catch (emailErr) {
+          console.warn('Nodemailer Error:', emailErr.message);
+          // Fallback message for development - letting the user know it failed but they can check console
+          res.status(500).json({ 
+            message: 'Failed to send email. If you are the developer, check the server terminal for the link.',
+            dev_link: magicLink // Only for dev/debugging
+          });
+        }
+    } catch (err) {
+        console.error('Magic Link Error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+router.get('/verify-magic-link', async (req, res) => {
+    try {
+        const { token } = req.query;
+        if (!token) return res.status(400).json({ message: 'Token is required' });
+
+        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+        const email = decoded.email;
+
+        // Upsert user
+        let userResult = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+        let user;
+
+        if (userResult.rows.length === 0) {
+            // Create user with placeholder name
+            const insertRes = await db.query(
+                'INSERT INTO users (name, email, password_hash, points) VALUES ($1, $2, $3, $4) RETURNING *',
+                ['New Student', email, 'MAGIC_LINK_AUTH', 0]
+            );
+            user = insertRes.rows[0];
+        } else {
+            user = userResult.rows[0];
+        }
+
+        // Generate final login token
+        const loginToken = jwt.sign(
+            { id: user.id, is_admin: user.is_admin },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '1d' }
+        );
+
+        res.json({ 
+          token: loginToken, 
+          user: { id: user.id, name: user.name, email: user.email, points: user.points, is_admin: user.is_admin } 
+        });
+    } catch (err) {
+        console.error('Magic Link Verification Error:', err);
+        res.status(401).json({ message: 'Invalid or expired token' });
+    }
+});
+
+// ─── GOOGLE AUTHENTICATION ───
+
+router.post('/google', async (req, res) => {
+    try {
+        const { idToken } = req.body;
+        if (!idToken) return res.status(400).json({ message: 'Google Token is required' });
+
+        const ticket = await googleClient.verifyIdToken({
+            idToken: idToken,
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+
+        const payload = ticket.getPayload();
+        const { email, name, picture, sub } = payload;
+
+        // Removed domain restriction as per user request
+
+        // Upsert user
+        let result = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+        let user;
+
+        if (result.rows.length === 0) {
+            // New user registration via Google
+            const insertRes = await db.query(
+                'INSERT INTO users (name, email, password_hash, points) VALUES ($1, $2, $3, $4) RETURNING *',
+                [name || 'Student', email, `GOOGLE_AUTH_${sub}`, 0]
+            );
+            user = insertRes.rows[0];
+            
+            // Log inaugural points history (placeholder if needed)
+        } else {
+            user = result.rows[0];
+        }
+
+        // Generate JWT
+        const token = jwt.sign(
+            { id: user.id, is_admin: user.is_admin },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '1d' }
+        );
+
+        res.json({
+            token,
+            user: { id: user.id, name: user.name, email: user.email, points: user.points, is_admin: user.is_admin }
+        });
+    } catch (err) {
+        console.error('Google Auth Error:', err);
+        res.status(401).json({ message: 'Google Authentication failed' });
     }
 });
 
