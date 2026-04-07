@@ -105,7 +105,21 @@ router.post('/adjust-points', async (req, res) => {
     }
 });
 
-// Get User History
+// Get Single User Details
+router.get('/user/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const result = await db.query('SELECT id, name, email, points, is_admin, created_at FROM users WHERE id = $1', [id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 router.get('/points-history/:id', async (req, res) => {
     try {
         const { id } = req.params;
@@ -117,6 +131,111 @@ router.get('/points-history/:id', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Failed to fetch points history' });
+    }
+});
+
+// ─── ADMINISTRATIVE AUTHENTICATION ───
+
+// Dynamic Admin Login
+router.post('/admin/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const result = await db.query('SELECT * FROM admin_config WHERE admin_email = $1 AND admin_password = $2', [email, password]);
+        
+        if (result.rows.length === 0) {
+            return res.status(401).json({ message: 'Invalid admin credentials' });
+        }
+        
+        res.json({ success: true, message: 'Admin logged in' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Superadmin Login
+router.post('/superadmin/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const result = await db.query('SELECT * FROM admin_config WHERE superadmin_email = $1 AND superadmin_password = $2', [email, password]);
+        
+        if (result.rows.length === 0) {
+            return res.status(401).json({ message: 'Invalid superadmin credentials' });
+        }
+        
+        res.json({ success: true, message: 'Superadmin logged in' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Get Admin Config (Superadmin only)
+router.get('/admin/config', async (req, res) => {
+    try {
+        const result = await db.query('SELECT admin_email, admin_password FROM admin_config ORDER BY id DESC LIMIT 1');
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Update Admin Config (Superadmin only)
+router.put('/admin/config', async (req, res) => {
+    try {
+        const { admin_email, admin_password } = req.body;
+        await db.query('UPDATE admin_config SET admin_email = $1, admin_password = $2 WHERE id = (SELECT id FROM admin_config ORDER BY id DESC LIMIT 1)', [admin_email, admin_password]);
+        res.json({ success: true, message: 'Admin credentials updated' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Get all Locations
+router.get('/locations', async (req, res) => {
+    try {
+        const result = await db.query('SELECT * FROM locations ORDER BY id ASC');
+        res.json(result.rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Add Location (Superadmin only)
+router.post('/locations', async (req, res) => {
+    try {
+        const { name, pincode } = req.body;
+        const result = await db.query('INSERT INTO locations (name, pincode) VALUES ($1, $2) RETURNING *', [name, pincode]);
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Update Location (Superadmin only)
+router.put('/locations/:id', async (req, res) => {
+    try {
+        const { name, pincode } = req.body;
+        const result = await db.query('UPDATE locations SET name = $1, pincode = $2 WHERE id = $3 RETURNING *', [name, pincode, req.params.id]);
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// Delete Location (Superadmin only)
+router.delete('/locations/:id', async (req, res) => {
+    try {
+        await db.query('DELETE FROM locations WHERE id = $1', [req.params.id]);
+        res.json({ success: true, message: 'Location deleted' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
     }
 });
 
