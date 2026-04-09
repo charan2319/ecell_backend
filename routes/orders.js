@@ -5,7 +5,7 @@ const router = express.Router();
 router.post('/', async (req, res) => {
     const client = await db.pool.connect();
     try {
-        const { user_id, total_vc, items } = req.body;
+        const { user_id, total_vc, items, delivery_location } = req.body;
         const uid = user_id || 1;
         
         await client.query('BEGIN');
@@ -30,8 +30,8 @@ router.post('/', async (req, res) => {
 
         // 2. Create Order
         const orderRes = await client.query(
-            'INSERT INTO orders (user_id, total_vc, status) VALUES ($1, $2, $3) RETURNING id',
-            [uid, total_vc, 'Processing']
+            'INSERT INTO orders (user_id, total_vc, status, delivery_location) VALUES ($1, $2, $3, $4) RETURNING id',
+            [uid, total_vc, 'Processing', delivery_location || 'Not Specified']
         );
         const orderId = orderRes.rows[0].id;
 
@@ -58,7 +58,7 @@ router.post('/', async (req, res) => {
 router.get('/', async (req, res) => {
     try {
         const data = await db.query(`
-            SELECT orders.id, orders.total_vc, orders.status, orders.created_at, users.name as user_name, users.email
+            SELECT orders.id, orders.total_vc, orders.status, orders.delivery_location, orders.created_at, users.name as user_name, users.email
             FROM orders 
             JOIN users ON orders.user_id = users.id 
             ORDER BY orders.id DESC
@@ -105,12 +105,28 @@ router.get('/user/:id', async (req, res) => {
             SELECT id, total_vc, status, created_at 
             FROM orders 
             WHERE user_id = $1 
-            ORDER BY id DESC
         `, [id]);
         res.json(data.rows);
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Failed to fetch history' });
+    }
+});
+
+// UPDATE order status
+router.patch('/:id/status', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        const result = await db.query(
+            'UPDATE orders SET status = $1 WHERE id = $2 RETURNING *',
+            [status, id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ message: 'Order not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Failed to update order status' });
     }
 });
 
