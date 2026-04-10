@@ -106,7 +106,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', upload.single('image'), async (req, res) => {
     try {
         const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time } = req.body;
-        const imageUrl = req.file ? req.file.path : '';
+        const imageUrl = req.file ? req.file.location : '';
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
@@ -129,7 +129,7 @@ router.put('/:id', upload.single('image'), async (req, res) => {
         if (currentRes.rows.length === 0) return res.status(404).json({ message: 'Product not found' });
         let imageUrl = currentRes.rows[0].image_url;
         if (req.file) {
-            imageUrl = req.file.path;
+            imageUrl = req.file.location;
         } else if (req.body.image_url) {
             imageUrl = req.body.image_url;
         }
@@ -157,7 +157,7 @@ router.post('/:id/images', upload.array('images', 10), async (req, res) => {
         for (const file of req.files) {
             const r = await db.query(
                 'INSERT INTO product_images (product_id, image_url) VALUES ($1, $2) RETURNING *',
-                [productId, file.path]
+                [productId, file.location]
             );
             inserted.push(r.rows[0]);
         }

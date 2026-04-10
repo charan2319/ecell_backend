@@ -2,7 +2,8 @@ const express = require('express');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('../models/db');
-const { sendMagicLink } = require('../utils/email');
+const { sendMagicLink, sendOtpEmail } = require('../utils/email');
+const crypto = require('crypto');
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
@@ -140,6 +141,106 @@ router.get('/verify-magic-link', async (req, res) => {
     }
 });
 
+// ─── OTP AUTHENTICATION ───
+
+router.post('/send-otp', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ message: 'Email is required' });
+        }
+
+        // Generate 4 digit OTP to match design
+        const otp = crypto.randomInt(1000, 9999).toString();
+        
+        // Hash OTP
+        const otpHash = await bcrypt.hash(otp, 10);
+
+        // Sign as temporal JWT (Stateless)
+        const otpToken = jwt.sign(
+            { email, otpHash },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '10m' }
+        );
+
+        console.log('--- OTP GENERATED ---');
+        console.log(`Email: ${email}`);
+        console.log(`OTP: ${otp}`);
+        console.log('---------------------');
+
+        try {
+            await sendOtpEmail(email, otp);
+            res.json({ message: 'OTP sent! Check your inbox.', otpToken });
+        } catch (emailErr) {
+            console.warn('Nodemailer Error:', emailErr.message);
+            // Return 200 so frontend can still proceed to OTP input and we can test it locally securely.
+            res.status(200).json({ 
+                message: 'Failed to send OTP email. Check the server terminal for the OTP.',
+                otpToken, // Send back so flow still works in dev
+                dev_otp: otp // Only for dev/debugging
+            });
+        }
+    } catch (err) {
+        console.error('Send OTP Error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
+router.post('/verify-otp', async (req, res) => {
+    try {
+        const { otp, otpToken } = req.body;
+        if (!otp || !otpToken) {
+            return res.status(400).json({ message: 'OTP and OTP Token are required' });
+        }
+
+        // Verify temporal JWT
+        let decoded;
+        try {
+            decoded = jwt.verify(otpToken, process.env.JWT_SECRET || 'secret');
+        } catch (err) {
+            return res.status(401).json({ message: 'OTP expired or invalid session' });
+        }
+
+        const { email, otpHash } = decoded;
+
+        // Verify OTP against Hash
+        const match = await bcrypt.compare(otp.toString(), otpHash);
+        if (!match) {
+            return res.status(400).json({ message: 'Incorrect OTP' });
+        }
+
+        // Upsert user
+        let userResult = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+        let user;
+
+        if (userResult.rows.length === 0) {
+            const insertRes = await db.query(
+                'INSERT INTO users (name, email, password_hash, points) VALUES ($1, $2, $3, $4) RETURNING *',
+                ['New Student', email, 'EMAIL_OTP_AUTH', 0]
+            );
+            user = insertRes.rows[0];
+        } else {
+            user = userResult.rows[0];
+        }
+
+        // Generate Login Token
+        const loginToken = jwt.sign(
+            { id: user.id, is_admin: user.is_admin },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '1d' }
+        );
+
+        res.json({ 
+            token: loginToken, 
+            user: { id: user.id, name: user.name, email: user.email, points: user.points, is_admin: user.is_admin } 
+        });
+
+    } catch (err) {
+        console.error('Verify OTP Error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+});
+
 // ─── GOOGLE AUTHENTICATION ───
 
 router.post('/google', async (req, res) => {
@@ -263,6 +364,24 @@ router.get('/points-history/:id', async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Failed to fetch points history' });
+    }
+});
+
+// Update User Name
+router.put('/user/:id/name', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name } = req.body;
+        if (!name || name.trim() === '') return res.status(400).json({ message: 'Name is required' });
+        const result = await db.query(
+            'UPDATE users SET name = $1 WHERE id = $2 RETURNING id, name, email, points, is_admin, created_at',
+            [name.trim(), id]
+        );
+        if (result.rows.length === 0) return res.status(404).json({ message: 'User not found' });
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error('Update name error:', err);
+        res.status(500).json({ message: 'Failed to update name' });
     }
 });
 

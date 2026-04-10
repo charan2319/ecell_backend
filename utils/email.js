@@ -1,7 +1,7 @@
 const nodemailer = require('nodemailer');
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // Defaulting to gmail for ease, user can change to Outlook
+  service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS
@@ -40,4 +40,28 @@ const sendMagicLink = async (email, link) => {
   return transporter.sendMail(mailOptions);
 };
 
-module.exports = { sendMagicLink };
+const sendOtpEmail = async (email, otp) => {
+  const mailOptions = {
+    from: `"Founder's Mart Control" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: 'Your Login OTP - Founder\'s Mart',
+    html: `
+      <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+        <h2 style="color: #333; text-align: center;">Welcome to Founder's Mart!</h2>
+        <p style="text-align: center; color: #555;">Use the following 4-digit One-Time Password (OTP) to log in to your account. This OTP is valid for 10 minutes.</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <span style="background-color: #f4f4f4; border: 1px dashed #ccc; color: #333; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 24px; letter-spacing: 4px;">
+            ${otp}
+          </span>
+        </div>
+        <p style="color: #666; font-size: 12px; text-align: center;">If you didn't request this, you can safely ignore this email.</p>
+        <hr style="border: 0; border-top: 1px solid #eee;" />
+        <p style="color: #999; font-size: 10px; text-align: center;">&copy; 2026 Founder's Mart by E-Cell Alliance University</p>
+      </div>
+    `
+  };
+
+  return transporter.sendMail(mailOptions);
+};
+
+module.exports = { sendMagicLink, sendOtpEmail };
