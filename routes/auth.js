@@ -490,4 +490,34 @@ router.delete('/locations/:id', async (req, res) => {
     }
 });
 
+// Bulk Migrate Production Images from Cloudinary to S3
+router.post('/migrate-production-images', async (req, res) => {
+    try {
+        const S3_BASE = 'https://ecell-store-images.s3.ap-south-1.amazonaws.com/s3';
+        const mapping = [
+            { id: 1, s3: 'power%20bank.png' },
+            { id: 2, s3: 'Drawing%20tablet%20(HUION%20HS64).jpg' },
+            { id: 5, s3: 'llama%20print%20cup.png' },
+            { id: 6, s3: 'deskpad%202.jpeg.webp' },
+            { id: 7, s3: 'highlighter%20set%20space.jpg' } // Placeholder if needed
+        ];
+
+        await db.query('BEGIN');
+        for (const item of mapping) {
+            const url = `${S3_BASE}/${item.s3}`;
+            await db.query('UPDATE products SET image_url = $1 WHERE id = $2', [url, item.id]);
+        }
+        
+        // Also fix any About Us image if it exists
+        await db.query(`UPDATE about_image SET image_url = $1 WHERE id = 1`, [`${S3_BASE}/about%20us.jpg`]);
+        
+        await db.query('COMMIT');
+        res.json({ success: true, message: 'Production images migrated to S3 successfully!' });
+    } catch (err) {
+        await db.query('ROLLBACK');
+        console.error('Migration Error:', err);
+        res.status(500).json({ message: 'Failed to migrate images', error: err.message });
+    }
+});
+
 module.exports = router;
