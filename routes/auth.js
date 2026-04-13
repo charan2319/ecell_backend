@@ -150,6 +150,13 @@ router.post('/send-otp', async (req, res) => {
             return res.status(400).json({ message: 'Email is required' });
         }
 
+        // Restrict to college domains
+        const domain = email.toLowerCase().split('@')[1];
+        const allowedDomains = ['alliance.edu.in', 'ced.alliance.edu.in'];
+        if (!allowedDomains.includes(domain)) {
+            return res.status(400).json({ message: 'Only Alliance University emails are allowed (@alliance.edu.in or @ced.alliance.edu.in).' });
+        }
+
         // Generate 4 digit OTP to match design
         const otp = crypto.randomInt(1000, 9999).toString();
         
