@@ -6,6 +6,7 @@ const { sendMagicLink, sendOtpEmail } = require('../utils/email');
 const crypto = require('crypto');
 const { OAuth2Client } = require('google-auth-library');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const { verifyToken, isAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -299,7 +300,7 @@ router.post('/google', async (req, res) => {
     }
 });
 
-router.get('/users', async (req, res) => {
+router.get('/users', verifyToken, isAdmin, async (req, res) => {
     try {
         const result = await db.query('SELECT id, name, email, points, is_admin, created_at FROM users ORDER BY id ASC');
         res.json(result.rows);
@@ -310,7 +311,7 @@ router.get('/users', async (req, res) => {
 });
 
 // Admin Point Adjustment
-router.post('/adjust-points', async (req, res) => {
+router.post('/adjust-points', verifyToken, isAdmin, async (req, res) => {
     const client = await db.pool.connect();
     try {
         const { user_id, amount, reason } = req.body; // amount can be positive or negative
@@ -404,7 +405,13 @@ router.post('/admin/login', async (req, res) => {
             return res.status(401).json({ message: 'Invalid admin credentials' });
         }
         
-        res.json({ success: true, message: 'Admin logged in' });
+        const token = jwt.sign(
+            { id: result.rows[0].id, is_admin: true, type: 'admin' },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '1d' }
+        );
+        
+        res.json({ success: true, message: 'Admin logged in', token });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
@@ -421,7 +428,13 @@ router.post('/superadmin/login', async (req, res) => {
             return res.status(401).json({ message: 'Invalid superadmin credentials' });
         }
         
-        res.json({ success: true, message: 'Superadmin logged in' });
+        const token = jwt.sign(
+            { id: result.rows[0].id, is_admin: true, type: 'superadmin' },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '1d' }
+        );
+        
+        res.json({ success: true, message: 'Superadmin logged in', token });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
@@ -429,7 +442,7 @@ router.post('/superadmin/login', async (req, res) => {
 });
 
 // Get Admin Config (Superadmin only)
-router.get('/admin/config', async (req, res) => {
+router.get('/admin/config', verifyToken, isAdmin, async (req, res) => {
     try {
         const result = await db.query('SELECT admin_email, admin_password FROM admin_config ORDER BY id DESC LIMIT 1');
         res.json(result.rows[0]);
@@ -440,7 +453,7 @@ router.get('/admin/config', async (req, res) => {
 });
 
 // Update Admin Config (Superadmin only)
-router.put('/admin/config', async (req, res) => {
+router.put('/admin/config', verifyToken, isAdmin, async (req, res) => {
     try {
         const { admin_email, admin_password } = req.body;
         await db.query('UPDATE admin_config SET admin_email = $1, admin_password = $2 WHERE id = (SELECT id FROM admin_config ORDER BY id DESC LIMIT 1)', [admin_email, admin_password]);
@@ -463,7 +476,7 @@ router.get('/locations', async (req, res) => {
 });
 
 // Add Location (Superadmin only)
-router.post('/locations', async (req, res) => {
+router.post('/locations', verifyToken, isAdmin, async (req, res) => {
     try {
         const { name, pincode } = req.body;
         const result = await db.query('INSERT INTO locations (name, pincode) VALUES ($1, $2) RETURNING *', [name, pincode]);
@@ -475,7 +488,7 @@ router.post('/locations', async (req, res) => {
 });
 
 // Update Location (Superadmin only)
-router.put('/locations/:id', async (req, res) => {
+router.put('/locations/:id', verifyToken, isAdmin, async (req, res) => {
     try {
         const { name, pincode } = req.body;
         const result = await db.query('UPDATE locations SET name = $1, pincode = $2 WHERE id = $3 RETURNING *', [name, pincode, req.params.id]);
@@ -487,7 +500,7 @@ router.put('/locations/:id', async (req, res) => {
 });
 
 // Delete Location (Superadmin only)
-router.delete('/locations/:id', async (req, res) => {
+router.delete('/locations/:id', verifyToken, isAdmin, async (req, res) => {
     try {
         await db.query('DELETE FROM locations WHERE id = $1', [req.params.id]);
         res.json({ success: true, message: 'Location deleted' });

@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../models/db');
 const upload = require('../utils/upload');
 const router = express.Router();
+const { verifyToken, isAdmin } = require('../middleware/auth');
 
 // Ensure product_images table exists
 const ensureProductImagesTable = async () => {
@@ -44,7 +45,7 @@ router.get('/categories', async (req, res) => {
     }
 });
 
-router.post('/categories', async (req, res) => {
+router.post('/categories', verifyToken, isAdmin, async (req, res) => {
     try {
         const { name } = req.body;
         if (!name) return res.status(400).json({ message: 'Category name is required' });
@@ -56,7 +57,7 @@ router.post('/categories', async (req, res) => {
 });
 
 // Rename a category across all products
-router.put('/categories/:oldCategory', async (req, res) => {
+router.put('/categories/:oldCategory', verifyToken, isAdmin, async (req, res) => {
     try {
         const { oldCategory } = req.params;
         const { newName } = req.body;
@@ -76,7 +77,7 @@ router.put('/categories/:oldCategory', async (req, res) => {
     }
 });
 
-router.delete('/categories/:category', async (req, res) => {
+router.delete('/categories/:category', verifyToken, isAdmin, async (req, res) => {
     try {
         const { category } = req.params;
         const productsCount = await db.query('SELECT COUNT(*) FROM products WHERE category = $1', [category]);
@@ -103,7 +104,7 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
         const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time } = req.body;
         const imageUrl = req.file ? req.file.location : '';
@@ -121,7 +122,7 @@ router.post('/', upload.single('image'), async (req, res) => {
     }
 });
 
-router.put('/:id', upload.single('image'), async (req, res) => {
+router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
         const { id } = req.params;
         const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time } = req.body;
@@ -148,7 +149,7 @@ router.put('/:id', upload.single('image'), async (req, res) => {
 });
 
 // Add extra images to a product (multiple)
-router.post('/:id/images', upload.array('images', 10), async (req, res) => {
+router.post('/:id/images', verifyToken, isAdmin, upload.array('images', 10), async (req, res) => {
     try {
         await ensureProductImagesTable();
         const productId = req.params.id;
@@ -169,7 +170,7 @@ router.post('/:id/images', upload.array('images', 10), async (req, res) => {
 });
 
 // Delete a single extra image by its row id
-router.delete('/images/:imgId', async (req, res) => {
+router.delete('/images/:imgId', verifyToken, isAdmin, async (req, res) => {
     try {
         await ensureProductImagesTable();
         await db.query('DELETE FROM product_images WHERE id = $1', [req.params.imgId]);
@@ -179,7 +180,7 @@ router.delete('/images/:imgId', async (req, res) => {
     }
 });
 
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
     try {
         await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
         res.json({ message: 'Product deleted' });

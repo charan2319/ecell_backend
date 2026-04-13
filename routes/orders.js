@@ -1,12 +1,19 @@
 const express = require('express');
 const db = require('../models/db');
 const router = express.Router();
+const { verifyToken, isAdmin } = require('../middleware/auth');
 
-router.post('/', async (req, res) => {
+router.post('/', verifyToken, async (req, res) => {
     const client = await db.pool.connect();
     try {
         const { user_id, total_vc, items, delivery_location } = req.body;
-        const uid = user_id || 1;
+        
+        // Security: Ensure user can only place an order for themselves
+        if (req.user.id !== user_id && !req.user.is_admin) {
+            return res.status(403).json({ message: 'Unauthorized. You can only place orders for your own account.' });
+        }
+
+        const uid = user_id;
         
         await client.query('BEGIN');
 
@@ -55,7 +62,7 @@ router.post('/', async (req, res) => {
     }
 });
 
-router.get('/', async (req, res) => {
+router.get('/', verifyToken, isAdmin, async (req, res) => {
     try {
         const data = await db.query(`
             SELECT orders.id, orders.total_vc, orders.status, orders.delivery_location, orders.created_at, users.name as user_name, users.email
@@ -71,7 +78,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET specific details for an order
-router.get('/:id', async (req, res) => {
+router.get('/:id', verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
         const detailsRes = await db.query(`
@@ -97,10 +104,15 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// GET user specific history list
-router.get('/user/:id', async (req, res) => {
+// GET user specific history list (Securely checks ID)
+router.get('/user/:id', verifyToken, async (req, res) => {
     try {
         const { id } = req.params;
+        
+        // Security check
+        if (req.user.id !== parseInt(id) && !req.user.is_admin) {
+            return res.status(403).json({ message: 'Unauthorized access to history.' });
+        }
         const data = await db.query(`
             SELECT id, total_vc, status, created_at 
             FROM orders 
@@ -114,7 +126,7 @@ router.get('/user/:id', async (req, res) => {
 });
 
 // UPDATE order status
-router.patch('/:id/status', async (req, res) => {
+router.patch('/:id/status', verifyToken, isAdmin, async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
