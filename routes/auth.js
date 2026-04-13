@@ -395,6 +395,47 @@ router.put('/user/:id/name', async (req, res) => {
 
 // ─── ADMINISTRATIVE AUTHENTICATION ───
 
+// Self-healing: Ensure admin_config table and columns exist
+const ensureAdminConfig = async () => {
+    try {
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS admin_config (
+                id SERIAL PRIMARY KEY,
+                admin_email VARCHAR(255),
+                admin_password VARCHAR(255),
+                superadmin_email VARCHAR(255),
+                superadmin_password VARCHAR(255)
+            )
+        `);
+        // Add superadmin columns if they don't exist (for older databases)
+        await db.query(`ALTER TABLE admin_config ADD COLUMN IF NOT EXISTS superadmin_email VARCHAR(255)`);
+        await db.query(`ALTER TABLE admin_config ADD COLUMN IF NOT EXISTS superadmin_password VARCHAR(255)`);
+        
+        // Ensure at least one row exists with default credentials
+        const check = await db.query('SELECT COUNT(*) FROM admin_config');
+        if (parseInt(check.rows[0].count) === 0) {
+            await db.query(
+                `INSERT INTO admin_config (admin_email, admin_password, superadmin_email, superadmin_password) VALUES ($1, $2, $3, $4)`,
+                ['admin@alliance.edu.in', 'admin123', 'superadmin@alliance.edu.in', 'super123']
+            );
+        } else {
+            // Ensure superadmin columns have values
+            const row = await db.query('SELECT superadmin_email FROM admin_config ORDER BY id DESC LIMIT 1');
+            if (!row.rows[0]?.superadmin_email) {
+                await db.query(
+                    `UPDATE admin_config SET superadmin_email = $1, superadmin_password = $2 WHERE id = (SELECT id FROM admin_config ORDER BY id DESC LIMIT 1)`,
+                    ['superadmin@alliance.edu.in', 'super123']
+                );
+            }
+        }
+    } catch (err) {
+        console.error('Admin config migration error:', err.message);
+    }
+};
+
+// Run migration on startup
+ensureAdminConfig();
+
 // Dynamic Admin Login
 router.post('/admin/login', async (req, res) => {
     try {
