@@ -181,12 +181,27 @@ router.delete('/images/:imgId', verifyToken, isAdmin, async (req, res) => {
 });
 
 router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
+    const client = await db.pool.connect();
     try {
-        await db.query('DELETE FROM products WHERE id = $1', [req.params.id]);
-        res.json({ message: 'Product deleted' });
+        await client.query('BEGIN');
+        
+        // 1. Delete dependent order items to satisfy foreign key constraints
+        await client.query('DELETE FROM order_items WHERE product_id = $1', [req.params.id]);
+        
+        // 2. Delete any extra product images
+        await client.query('DELETE FROM product_images WHERE product_id = $1', [req.params.id]);
+        
+        // 3. Delete the product itself
+        await client.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+        
+        await client.query('COMMIT');
+        res.json({ message: 'Product deleted successfully' });
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error('Error deleting product:', err);
-        res.status(500).json({ message: 'Server error deleting product' });
+        res.status(500).json({ message: 'Server error deleting product: ' + err.message });
+    } finally {
+        client.release();
     }
 });
 
