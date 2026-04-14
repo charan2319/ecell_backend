@@ -423,25 +423,47 @@ async function scrapeProductData(url, maxImages = 4) {
       });
     }
 
-    // 8. Fallback exact IDs
+    // 8. Fallback for Search Result Pages / Category Pages
     if (images.length === 0) {
-      const fallbackIds = ['#landingImage', '#imgBlkFront', '#main-image', '.product-image img'];
+      const searchSelectors = [
+        '.s-image', '[data-component-type="s-product-image"] img', // Amazon
+        '._2r_T1I img', '._396cs4 img', '._2AmZ0f img', // Flipkart
+        '.product-item-photo img', '.product-image-photo', // Magento/Generic
+        '.item-img img', '.product-card-img img' // Generic
+      ];
+      searchSelectors.forEach(sel => {
+        $(sel).first().each((i, el) => {
+          let src = $(el).attr('src') || $(el).attr('data-src') || '';
+          if (src) {
+             // Try to upgrade search thumb to high-res
+             src = src.replace(/\._AC_[A-Z]{2}\d+_\./, '.');
+             src = src.replace(/\._[A-Z]{2}\d+_\./, '.');
+             src = src.replace(/\/128\/128\//g, '/832/832/');
+             addImage(src);
+          }
+        });
+      });
+    }
+
+    // 9. Final Fallback exact IDs & fuzzy scan
+    if (images.length === 0) {
+      const fallbackIds = ['#landingImage', '#imgBlkFront', '#main-image', '.product-image img', '#main-img'];
       for (const sel of fallbackIds) {
         const src = $(sel).attr('src') || $(sel).attr('data-src') || '';
         if (addImage(src)) break;
       }
     }
     
-    // 9. Fuzzy DOM scan (large images only)
-    if (images.length < maxImages) {
+    // 10. Last ditch: grab the absolute first image that looks like a product
+    if (images.length === 0) {
       $('img').each((i, el) => {
-        if (images.length >= maxImages) return;
+        if (images.length >= 1) return;
+        const src = $(el).attr('src') || $(el).attr('data-src') || '';
         const width = parseInt($(el).attr('width') || '0');
         const height = parseInt($(el).attr('height') || '0');
-        const src = $(el).attr('src') || $(el).attr('data-src') || '';
-        if (!src) return;
-        // If image is reasonably large or explicitly marked as product
-        if (width > 250 || height > 250 || (src.includes('product') && !isLikelyBrandImage(src))) {
+        const isProduct = (src.includes('product') || src.includes('item') || src.includes('media')) && !isLikelyBrandImage(src);
+        
+        if (isProduct || (width > 150 && height > 150)) {
           addImage(src);
         }
       });
