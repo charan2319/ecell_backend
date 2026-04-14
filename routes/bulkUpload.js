@@ -131,8 +131,9 @@ async function scrapeProductData(url, maxImages = 4) {
       scrapedTitle = $('h1').first().text().trim() || '';
     }
 
-    // Clean up title - remove site name suffixes
+    // Clean up title - remove site name prefixes and suffixes
     scrapedTitle = scrapedTitle
+      .replace(/^(Amazon\.in|Amazon|Flipkart|Myntra|Meesho|Buy Online)\s*[:|-]\s*/i, '')
       .replace(/\s*[-|:]\s*(Amazon\.in|Amazon|Flipkart|Myntra|Meesho|Buy Online).*$/i, '')
       .replace(/\s*:\s*Buy\s+Online.*$/i, '')
       .replace(/\s*\|\s*Free Shipping.*$/i, '')
@@ -432,7 +433,8 @@ async function scrapeProductData(url, maxImages = 4) {
         '.item-img img', '.product-card-img img' // Generic
       ];
       searchSelectors.forEach(sel => {
-        $(sel).first().each((i, el) => {
+        $(sel).each((i, el) => {
+          if (images.length >= (maxImages > 4 ? 4 : maxImages)) return; // Don't overwhelm with search thumbs, but take multiple
           let src = $(el).attr('src') || $(el).attr('data-src') || '';
           if (src) {
              // Try to upgrade search thumb to high-res
