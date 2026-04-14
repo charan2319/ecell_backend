@@ -117,9 +117,12 @@ router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) 
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
+        const safeCat = category || 'Uncategorized';
+        await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
+
         const result = await db.query(
             'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl, category || 'Uncategorized', brand || '', 100, is_new_arrival === 'true' || is_new_arrival === true]
+            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl, safeCat, brand || '', 100, is_new_arrival === 'true' || is_new_arrival === true]
         );
         res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -143,9 +146,12 @@ router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
+        const safeCat = category || 'Uncategorized';
+        await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
+
         const result = await db.query(
             'UPDATE products SET name = $1, description = $2, price_vc = $3, original_price = $4, delivery_location = $5, delivery_time = $6, image_url = $7, category = $8, brand = $9, is_new_arrival = $10 WHERE id = $11 RETURNING *',
-            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl || '', category || 'Uncategorized', brand || '', is_new_arrival === 'true' || is_new_arrival === true, id]
+            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl || '', safeCat, brand || '', is_new_arrival === 'true' || is_new_arrival === true, id]
         );
         res.json(result.rows[0]);
     } catch (err) {

@@ -674,9 +674,12 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         const mainImage = imageUrls.length > 0 ? imageUrls[0] : '';
 
         // Insert product
+        const safeCat = category || 'Uncategorized';
+        await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
+
         const insertResult = await db.query(
           'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-          [productName, '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, category, detectedBrand, 100, false]
+          [productName, '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, safeCat, detectedBrand, 100, false]
         );
         const productId = insertResult.rows[0].id;
 
