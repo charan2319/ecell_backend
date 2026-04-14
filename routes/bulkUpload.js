@@ -303,9 +303,14 @@ async function scrapeProductData(url, maxImages = 4) {
       if (!src.startsWith('http')) return false;
       if (isLikelyBrandImage(src)) return false;
       if (images.includes(src)) return false;
-      // Deduplicate by removing Amazon size suffixes for comparison
-      const normalized = src.replace(/\._[A-Z]{2}\d+_\./, '.');
-      if (images.some(existing => existing.replace(/\._[A-Z]{2}\d+_\./, '.') === normalized)) return false;
+      // Deduplicate by stripping query parameters and removing Amazon size suffixes
+      const getBaseNormalized = (url) => {
+         try {
+           return url.split('?')[0].replace(/\._[A-Z]{2}\d+_\./, '.');
+         } catch(err) { return url; }
+      }
+      const normalizedSrc = getBaseNormalized(src);
+      if (images.some(existing => getBaseNormalized(existing) === normalizedSrc)) return false;
       images.push(src);
       return true;
     };
@@ -653,7 +658,7 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
           // Download and upload each image to S3
           for (let j = 0; j < scraped.images.length; j++) {
             const imgBuffer = await downloadImage(scraped.images[j]);
-            if (imgBuffer && imgBuffer.length > 5000) { // Skip small images/logos (must be >5KB)
+            if (imgBuffer && imgBuffer.length > 2000) { // Skip small images/logos (must be >2KB)
               const ext = scraped.images[j].match(/\.(jpg|jpeg|png|webp|gif)/i)?.[1] || 'jpg';
               const filename = `${uuidv4()}.${ext}`;
               const s3Url = await uploadBufferToS3(imgBuffer, `image/${ext}`, filename);
@@ -741,7 +746,7 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
     }
 
     console.log(`[Scrape Link] Scraping: ${url}`);
-    const scraped = await scrapeProductData(url.trim(), 10);
+    const scraped = await scrapeProductData(url.trim(), 4);
 
     // Download and upload images to S3
     const s3ImageUrls = [];
