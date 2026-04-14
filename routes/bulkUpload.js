@@ -45,45 +45,158 @@ async function uploadBufferToS3(buffer, contentType, filename) {
   return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 }
 
-// ─── Helper: Scrape Product Images from Any Site ───
-async function scrapeProductImages(url, maxImages = 4) {
+// ─── Helper: Scrape Product Data (Images + Price) from Any Site ───
+async function scrapeProductData(url, maxImages = 4) {
   const images = [];
+  let scrapedPrice = 0;
   try {
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+        'Accept-Encoding': 'identity',
       }
     });
     const html = await response.text();
     const $ = cheerio.load(html);
 
-    // 1. Check for standard JSON-LD Schema (works on Myntra, Flipkart, etc. if available in HTML)
+    // ━━━━━━━ PRICE SCRAPING ━━━━━━━
+
+    // 1. JSON-LD Schema price (most reliable — works on Amazon, Flipkart, Myntra, etc.)
+    $('script[type="application/ld+json"]').each((i, el) => {
+      if (scrapedPrice > 0) return;
+      try {
+        const data = JSON.parse($(el).html());
+        const extractPrice = (item) => {
+          if (!item) return 0;
+          // Direct offers.price
+          if (item.offers) {
+            const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
+            for (const offer of offers) {
+              const p = parseFloat(offer.price || offer.lowPrice || 0);
+              if (p > 0) return Math.round(p);
+            }
+          }
+          return 0;
+        };
+        if (Array.isArray(data)) {
+          for (const item of data) {
+            if (item['@type'] === 'Product') { scrapedPrice = extractPrice(item); break; }
+          }
+        } else if (data['@type'] === 'Product') {
+          scrapedPrice = extractPrice(data);
+        } else if (data['@graph']) {
+          for (const item of data['@graph']) {
+            if (item['@type'] === 'Product') { scrapedPrice = extractPrice(item); break; }
+          }
+        }
+      } catch (e) { }
+    });
+
+    // 2. Amazon-specific price selectors
+    if (scrapedPrice === 0) {
+      const amazonPriceSelectors = [
+        '.a-price .a-offscreen',
+        '#priceblock_dealprice',
+        '#priceblock_ourprice',
+        '#priceblock_saleprice',
+        '.a-price-whole',
+        '#corePrice_feature_div .a-offscreen',
+        '#corePriceDisplay_desktop_feature_div .a-offscreen',
+        '.priceToPay .a-offscreen',
+      ];
+      for (const selector of amazonPriceSelectors) {
+        const text = $(selector).first().text().trim();
+        if (text) {
+          const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+          if (match) {
+            const p = parseFloat(match[0]);
+            if (p > 0) { scrapedPrice = Math.round(p); break; }
+          }
+        }
+      }
+    }
+
+    // 3. Flipkart-specific price selectors
+    if (scrapedPrice === 0) {
+      const flipkartSelectors = [
+        '._30jeq3', // Flipkart main price
+        '._16Jk6d', // Flipkart deal price
+        '.CEmiEU div._30jeq3',
+      ];
+      for (const selector of flipkartSelectors) {
+        const text = $(selector).first().text().trim();
+        if (text) {
+          const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+          if (match) {
+            const p = parseFloat(match[0]);
+            if (p > 0) { scrapedPrice = Math.round(p); break; }
+          }
+        }
+      }
+    }
+
+    // 4. og:price / product:price meta tags
+    if (scrapedPrice === 0) {
+      const metaPrice = $('meta[property="og:price:amount"]').attr('content') ||
+                         $('meta[property="product:price:amount"]').attr('content') ||
+                         $('meta[name="twitter:data1"]').attr('content') || '';
+      const match = metaPrice.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+      if (match) {
+        const p = parseFloat(match[0]);
+        if (p > 0) scrapedPrice = Math.round(p);
+      }
+    }
+
+    // 5. Generic fallback: look for ₹ or Rs. followed by a number anywhere in common price containers
+    if (scrapedPrice === 0) {
+      const priceContainers = [
+        '[class*="price"]', '[class*="Price"]',
+        '[id*="price"]', '[id*="Price"]',
+        '[class*="cost"]', '[class*="amount"]',
+      ];
+      for (const selector of priceContainers) {
+        $(selector).each((i, el) => {
+          if (scrapedPrice > 0) return;
+          const text = $(el).text();
+          // Match ₹1,234 or Rs. 1234 or INR 1234 patterns
+          const match = text.match(/(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.\d{1,2})?)/);
+          if (match) {
+            const p = parseFloat(match[1].replace(/,/g, ''));
+            if (p > 0 && p < 1000000) scrapedPrice = Math.round(p);
+          }
+        });
+        if (scrapedPrice > 0) break;
+      }
+    }
+
+    console.log(`[Scraper] Price found: ₹${scrapedPrice} from ${url}`);
+
+    // ━━━━━━━ IMAGE SCRAPING ━━━━━━━
+
+    // 1. JSON-LD Schema images
     let schemaImages = [];
     $('script[type="application/ld+json"]').each((i, el) => {
       try {
         const data = JSON.parse($(el).html());
-        if (data && Array.isArray(data)) {
-          data.forEach(item => {
-            if (item['@type'] === 'Product' && item.image) {
-              if (Array.isArray(item.image)) schemaImages.push(...item.image);
-              else if (typeof item.image === 'string') schemaImages.push(item.image);
-            }
-          });
-        } else if (data && data['@type'] === 'Product' && data.image) {
-          if (Array.isArray(data.image)) schemaImages.push(...data.image);
-          else if (typeof data.image === 'string') schemaImages.push(data.image);
-        }
+        const extractImages = (item) => {
+          if (item && item['@type'] === 'Product' && item.image) {
+            if (Array.isArray(item.image)) schemaImages.push(...item.image);
+            else if (typeof item.image === 'string') schemaImages.push(item.image);
+          }
+        };
+        if (Array.isArray(data)) data.forEach(extractImages);
+        else extractImages(data);
+        if (data && data['@graph']) data['@graph'].forEach(extractImages);
       } catch (e) { }
     });
     
-    // Add schema images first
     schemaImages.forEach(img => {
       if (img && !images.includes(img) && images.length < maxImages) images.push(img);
     });
 
-    // 2. Amazon Specific Logic (data-a-dynamic-image)
+    // 2. Amazon Specific (data-a-dynamic-image)
     if (images.length < maxImages) {
       const dynamicImageEl = $('[data-a-dynamic-image]').first();
       if (dynamicImageEl.length) {
@@ -97,31 +210,22 @@ async function scrapeProductImages(url, maxImages = 4) {
       }
     }
 
-    // 3. Open Graph (og:image) - Usually the main high-res image
+    // 3. Open Graph image
     if (images.length < maxImages) {
       const ogImage = $('meta[property="og:image"]').attr('content');
       if (ogImage && !images.includes(ogImage)) images.push(ogImage);
     }
 
-    // 4. Flipkart / Myntra / Generic Image Selectors
+    // 4. Generic product image selectors
     if (images.length < maxImages) {
-      // Find all large images that look like product images
       $('img').each((i, el) => {
         if (images.length >= maxImages) return;
         let src = $(el).attr('src') || $(el).attr('data-src') || '';
-        
-        // Amazon thumbnail resolution fix
-        src = src.replace(/\._[^.]*_\./, '.');
-        
-        // Filter out tiny icons, logos, sprites
+        src = src.replace(/\._[^.]*_\./, '.'); // Amazon hi-res fix
         const classNames = ($(el).attr('class') || '').toLowerCase();
         if (src && src.startsWith('http') && 
-            !src.includes('logo') && 
-            !src.includes('icon') && 
-            !src.includes('sprite') && 
+            !src.includes('logo') && !src.includes('icon') && !src.includes('sprite') &&
             !images.includes(src)) {
-            
-            // If it's a known ecom class or a very large image URL pattern
             if (classNames.includes('product') || classNames.includes('image') || src.includes('imageright') || src.includes('image1')) {
                 images.push(src);
             }
@@ -129,7 +233,7 @@ async function scrapeProductImages(url, maxImages = 4) {
       });
     }
 
-    // 5. Fallback: Any generic main image
+    // 5. Fallback
     if (images.length === 0) {
       const mainImg = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || $('.product-image img').attr('src');
       if (mainImg) images.push(mainImg);
@@ -138,7 +242,7 @@ async function scrapeProductImages(url, maxImages = 4) {
   } catch (err) {
     console.error(`Error scraping URL ${url}:`, err.message);
   }
-  return images.slice(0, maxImages);
+  return { images: images.slice(0, maxImages), price: scrapedPrice };
 }
 
 // ─── Helper: Download image from URL and return buffer ───
@@ -261,7 +365,7 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         continue;
       }
 
-      const priceVc = parseInt(priceRaw) || 0;
+      const excelPrice = parseInt(priceRaw) || 0;
 
       try {
         // Auto-categorize
@@ -273,17 +377,19 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
           existingCategories.push(category);
         }
 
-        // Scrape images from Amazon link
+        // Scrape images AND price from the product link
         let imageUrls = [];
+        let scrapedPriceFromLink = 0;
         if (link && link.trim()) {
-          console.log(`[Bulk Upload] Scraping images for: ${productName} from ${link}`);
-          const scrapedImages = await scrapeProductImages(link.trim());
+          console.log(`[Bulk Upload] Scraping data for: ${productName} from ${link}`);
+          const scraped = await scrapeProductData(link.trim());
+          scrapedPriceFromLink = scraped.price || 0;
 
           // Download and upload each image to S3
-          for (let j = 0; j < scrapedImages.length; j++) {
-            const imgBuffer = await downloadImage(scrapedImages[j]);
+          for (let j = 0; j < scraped.images.length; j++) {
+            const imgBuffer = await downloadImage(scraped.images[j]);
             if (imgBuffer && imgBuffer.length > 1000) { // Skip tiny/broken images
-              const ext = scrapedImages[j].match(/\.(jpg|jpeg|png|webp|gif)/i)?.[1] || 'jpg';
+              const ext = scraped.images[j].match(/\.(jpg|jpeg|png|webp|gif)/i)?.[1] || 'jpg';
               const filename = `${uuidv4()}.${ext}`;
               const s3Url = await uploadBufferToS3(imgBuffer, `image/${ext}`, filename);
               imageUrls.push(s3Url);
@@ -291,12 +397,16 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
           }
         }
 
+        // Use Excel price if provided, otherwise use scraped price
+        const finalPrice = excelPrice > 0 ? excelPrice : scrapedPriceFromLink;
+        const priceSource = excelPrice > 0 ? 'excel' : (scrapedPriceFromLink > 0 ? 'scraped' : 'none');
+
         const mainImage = imageUrls.length > 0 ? imageUrls[0] : '';
 
         // Insert product
         const insertResult = await db.query(
           'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-          [productName, '', priceVc, null, 'Alliance University', '7 Days', mainImage, category, '', 100, false]
+          [productName, '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, category, '', 100, false]
         );
         const productId = insertResult.rows[0].id;
 
@@ -311,13 +421,14 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         results.push({
           row: i + 2,
           name: productName,
-          price: priceVc,
+          price: finalPrice,
+          priceSource,
           category,
           images: imageUrls.length,
           status: 'success'
         });
 
-        console.log(`[Bulk Upload] ✅ Added: ${productName} | ${priceVc} VC | ${category} | ${imageUrls.length} images`);
+        console.log(`[Bulk Upload] ✅ Added: ${productName} | ${finalPrice} VC (${priceSource}) | ${category} | ${imageUrls.length} images`);
 
       } catch (productErr) {
         console.error(`[Bulk Upload] ❌ Row ${i + 2} error:`, productErr.message);
@@ -343,12 +454,12 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
 // ─── GET template info ───
 router.get('/bulk-upload/template', (req, res) => {
   res.json({
-    columns: ['ProductName', 'Price', 'Link'],
+    columns: ['ProductName', 'Price (Optional)', 'Link'],
     example: [
-      { ProductName: 'boAt Rockerz 450 Bluetooth Headphone', Price: 1500, Link: 'https://www.amazon.in/dp/B07SZG2FHN' },
+      { ProductName: 'boAt Rockerz 450 Bluetooth Headphone', Price: '', Link: 'https://www.amazon.in/dp/B07SZG2FHN' },
       { ProductName: 'Cello Butterflow Ball Pen Pack', Price: 200, Link: 'https://www.amazon.in/dp/B08YKDLKFK' }
     ],
-    instructions: 'Create an Excel file (.xlsx) with exactly 3 columns: ProductName, Price, Link. Price is in VCs (just the number). Link should be the full e-commerce product URL (Amazon, Flipkart, Meesho, Myntra, etc).'
+    instructions: 'Create an Excel file (.xlsx) with columns: ProductName, Price, Link. Price is optional — if left empty, the price will be automatically fetched from the product link. Link should be the full e-commerce product URL (Amazon, Flipkart, Meesho, Myntra, etc).'
   });
 });
 

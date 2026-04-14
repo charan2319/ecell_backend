@@ -205,4 +205,33 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
+// ─── Clear All Products ───
+router.delete('/clear-all/confirm', verifyToken, isAdmin, async (req, res) => {
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        // 1. Delete all order items (foreign key to products)
+        await client.query('DELETE FROM order_items');
+        
+        // 2. Delete all product images
+        await client.query('DELETE FROM product_images');
+        
+        // 3. Delete all products
+        const result = await client.query('DELETE FROM products');
+        
+        await client.query('COMMIT');
+        
+        console.log(`[Clear All] ✅ Deleted ${result.rowCount} products`);
+        res.json({ message: `All ${result.rowCount} products deleted successfully`, count: result.rowCount });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error clearing all products:', err);
+        res.status(500).json({ message: 'Server error clearing products: ' + err.message });
+    } finally {
+        client.release();
+    }
+});
+
 module.exports = router;
+
