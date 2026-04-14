@@ -139,13 +139,20 @@ async function scrapeProductData(url, maxImages = 4) {
 
     // 4. og:price / product:price meta tags
     if (scrapedPrice === 0) {
-      const metaPrice = $('meta[property="og:price:amount"]').attr('content') ||
-                         $('meta[property="product:price:amount"]').attr('content') ||
-                         $('meta[name="twitter:data1"]').attr('content') || '';
-      const match = metaPrice.replace(/[₹,\s]/g, '').match(/[\d.]+/);
-      if (match) {
-        const p = parseFloat(match[0]);
-        if (p > 0) scrapedPrice = Math.round(p);
+      const priceMetas = [
+        $('meta[property="og:price:amount"]').attr('content'),
+        $('meta[property="product:price:amount"]').attr('content'),
+        $('meta[name="twitter:data1"]').attr('content'),
+        $('meta[name="twitter:data2"]').attr('content'),
+        $('meta[itemprop="price"]').attr('content')
+      ];
+      for (const metaPrice of priceMetas) {
+        if (!metaPrice) continue;
+        const match = metaPrice.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+        if (match) {
+          const p = parseFloat(match[0]);
+          if (p > 0) { scrapedPrice = Math.round(p); break; }
+        }
       }
     }
 
@@ -244,17 +251,25 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
 
-    // 3. Open Graph image
+    // 3. Open Graph image and other meta tags
     if (images.length < maxImages) {
-      const ogImage = $('meta[property="og:image"]').attr('content');
-      if (ogImage && !images.includes(ogImage) && !isLikelyBrandImage(ogImage)) images.push(ogImage);
+      const metaTags = ['og:image', 'twitter:image', 'itemprop="image"'];
+      metaTags.forEach(tag => {
+        let content;
+        if (tag.includes('=')) content = $(`meta[${tag}]`).attr('content');
+        else content = $(`meta[property="${tag}"]`).attr('content') || $(`meta[name="${tag}"]`).attr('content');
+        if (content && !images.includes(content) && !isLikelyBrandImage(content)) {
+          images.push(content);
+        }
+      });
     }
 
     // 4. Generic product image selectors (ONLY inside product containers)
     if (images.length < maxImages) {
       const productContainers = [
         '#imgTagWrapperId', '.product-image', '.gallery-image', '.product-gallery',
-        '.main-image', '[data-gallery]', '.slick-track', '.swiper-wrapper'
+        '.main-image', '[data-gallery]', '.slick-track', '.swiper-wrapper',
+        '.woocommerce-product-gallery__image', '.product-main-image', '._396cs4', '._2r_T1I'
       ];
       
       productContainers.forEach(container => {
@@ -279,6 +294,21 @@ async function scrapeProductData(url, maxImages = 4) {
     if (images.length === 0) {
       const mainImg = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || $('.product-image img').first().attr('src');
       if (mainImg && mainImg.startsWith('http') && !isLikelyBrandImage(mainImg)) images.push(mainImg);
+    }
+    
+    // 6. Deep Fallback IF STILL 0 IMAGES (Try targeting large images to avoid related-product noise)
+    if (images.length === 0) {
+      $('img').each((i, el) => {
+        if (images.length > 0) return;
+        const src = $(el).attr('src') || $(el).attr('data-src') || '';
+        const alt = ($(el).attr('alt') || '').toLowerCase();
+        if (src && src.startsWith('http') && !isLikelyBrandImage(src) && !alt.includes('logo') && !alt.includes('icon')) {
+          // If URL looks like a high-res structure (e.g., 416x416) or alt text is descriptive
+          if (/\b\d{3,}x\d{3,}\b/.test(src) || src.includes('/416/416/') || src.includes('product') || src.includes('large') || alt.length > 20) {
+            images.push(src);
+          }
+        }
+      });
     }
 
   } catch (err) {
