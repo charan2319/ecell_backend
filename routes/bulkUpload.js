@@ -50,18 +50,43 @@ async function scrapeProductData(url, maxImages = 4) {
   const images = [];
   let scrapedPrice = 0;
   let scrapedTitle = '';
+  
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
+
     const response = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
         'Accept-Encoding': 'identity',
+        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'Referer': 'https://www.google.com/',
         'Cache-Control': 'no-cache',
         'Pragma': 'no-cache',
       },
       redirect: 'follow',
+      signal: controller.signal
     });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      console.warn(`[Scraper] Failed to fetch ${url}. Status: ${response.status}`);
+      if (response.status === 403 || response.status === 503) {
+        throw new Error(`Access denied by ${new URL(url).hostname}. The site is blocking automated requests.`);
+      }
+      throw new Error(`Server returned status ${response.status}`);
+    }
+
     const html = await response.text();
     const $ = cheerio.load(html);
 
@@ -99,6 +124,11 @@ async function scrapeProductData(url, maxImages = 4) {
     // 4. og:title / meta title fallback
     if (!scrapedTitle) {
       scrapedTitle = $('meta[property="og:title"]').attr('content') || $('meta[name="title"]').attr('content') || $('title').text().trim() || '';
+    }
+
+    // 5. Last resort: first h1
+    if (!scrapedTitle) {
+      scrapedTitle = $('h1').first().text().trim() || '';
     }
 
     // Clean up title - remove site name suffixes
@@ -230,37 +260,13 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
 
-    // 6. Generic fallback: look for ₹ or Rs. followed by a number
+    // 4. Fuzzy price scan (look for currency patterns in entire text)
     if (scrapedPrice === 0) {
-      const priceContainers = [
-        '[class*="price"]', '[class*="Price"]', '[class*="PRICE"]',
-        '[id*="price"]', '[id*="Price"]',
-        '[class*="cost"]', '[class*="amount"]', '[class*="selling"]',
-      ];
-      for (const selector of priceContainers) {
-        $(selector).each((i, el) => {
-          if (scrapedPrice > 0) return;
-          const text = $(el).text();
-          const match = text.match(/(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.\d{1,2})?)/);
-          if (match) {
-            const p = parseFloat(match[1].replace(/,/g, ''));
-            if (p > 0 && p < 1000000) scrapedPrice = Math.round(p);
-          }
-        });
-        if (scrapedPrice > 0) break;
-      }
-    }
-
-    // 7. Last resort: scan entire HTML for price pattern
-    if (scrapedPrice === 0) {
-      const bodyText = $('body').text();
-      const priceMatches = bodyText.match(/₹\s*([0-9,]+)/g);
-      if (priceMatches && priceMatches.length > 0) {
-        // Take the first reasonable price
-        for (const pm of priceMatches) {
-          const val = parseFloat(pm.replace(/[₹,\s]/g, ''));
-          if (val > 50 && val < 500000) { scrapedPrice = Math.round(val); break; }
-        }
+      const text = $('body').text();
+      const match = text.match(/(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.\d{1,2})?)/);
+      if (match) {
+        const p = parseFloat(match[1].replace(/,/g, ''));
+        if (p > 10 && p < 1000000) scrapedPrice = Math.round(p);
       }
     }
 
@@ -404,35 +410,27 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
     
-    // 8. Deep fallback: scan page for large product-like images
-    if (images.length === 0) {
-      const allImgs = [];
+    // 4. Fuzzy DOM scan (large images only)
+    if (images.length < maxImages) {
       $('img').each((i, el) => {
-        const src = $(el).attr('src') || $(el).attr('data-src') || '';
-        const alt = ($(el).attr('alt') || '').toLowerCase();
+        if (images.length >= maxImages) return;
         const width = parseInt($(el).attr('width') || '0');
         const height = parseInt($(el).attr('height') || '0');
-        if (src && src.startsWith('http') && !isLikelyBrandImage(src) && !alt.includes('logo') && !alt.includes('icon')) {
-          // Score images: larger dimensions or product-like URLs get higher scores
-          let score = 0;
-          if (width > 200 || height > 200) score += 3;
-          if (/\b\d{3,}x\d{3,}\b/.test(src)) score += 2;
-          if (src.includes('product') || src.includes('large') || src.includes('zoom')) score += 2;
-          if (alt.length > 15) score += 1;
-          if (width > 50 && width < 100) score -= 2; // Thumbnails
-          allImgs.push({ src, score });
+        const src = $(el).attr('src') || $(el).attr('data-src') || '';
+        // If image is reasonably large or explicitly marked as product
+        if (width > 250 || height > 250 || (src.includes('product') && !isLikelyBrandImage(src))) {
+          addImage(src);
         }
       });
-      // Sort by score descending and take the best ones
-      allImgs.sort((a, b) => b.score - a.score);
-      for (const img of allImgs) {
-        if (!addImage(img.src)) continue;
-        if (images.length >= maxImages) break;
-      }
     }
 
   } catch (err) {
-    console.error(`Error scraping URL ${url}:`, err.message);
+    if (err.name === 'AbortError') {
+      console.error(`[Scraper] Timeout scraping ${url}`);
+      throw new Error('Request timed out. The site is taking too long to respond.');
+    }
+    console.error(`[Scraper] Error scraping ${url}:`, err.message);
+    throw err; // Re-throw to handle in route
   }
   return { images: images.slice(0, maxImages), price: scrapedPrice, title: scrapedTitle };
 }
