@@ -175,6 +175,37 @@ async function scrapeProductData(url, maxImages = 4) {
 
     // ━━━━━━━ IMAGE SCRAPING ━━━━━━━
 
+    // Brand/logo keywords to filter out from image URLs
+    const brandLogoFilters = [
+      'logo', 'brand', 'badge', 'banner', 'sprite', 'icon', 'favicon',
+      'seller', 'store', 'shop-logo', 'merchant',
+      'boat-logo', 'noise-logo', 'jbl-logo', 'sony-logo',
+      'trust-badge', 'payment', 'guarantee', 'warranty',
+      'rating', 'star', 'review',
+      'advertisement', 'promo', 'coupon', 'offer-badge',
+      'placeholder', 'loading', 'lazy',
+    ];
+
+    // Known brand image URL patterns (brand name appears as the primary image content, not the product)
+    const brandImagePatterns = [
+      /\/brand[s]?\//i,
+      /\/logo[s]?\//i,
+      /brand[-_]?logo/i,
+      /store[-_]?logo/i,
+      /seller[-_]?logo/i,
+    ];
+
+    const isLikelyBrandImage = (url) => {
+      const urlLower = url.toLowerCase();
+      // Check against filter keywords
+      if (brandLogoFilters.some(f => urlLower.includes(f))) return true;
+      // Check against regex patterns
+      if (brandImagePatterns.some(p => p.test(url))) return true;
+      // Check if the URL is a very small image (badge-like dimensions in URL)
+      if (/\b\d{1,2}x\d{1,2}\b/.test(url)) return true; // e.g., 20x20, 16x16
+      return false;
+    };
+
     // 1. JSON-LD Schema images
     let schemaImages = [];
     $('script[type="application/ld+json"]').each((i, el) => {
@@ -192,8 +223,11 @@ async function scrapeProductData(url, maxImages = 4) {
       } catch (e) { }
     });
     
+    // Filter schema images for brand logos before adding
     schemaImages.forEach(img => {
-      if (img && !images.includes(img) && images.length < maxImages) images.push(img);
+      if (img && !images.includes(img) && images.length < maxImages && !isLikelyBrandImage(img)) {
+        images.push(img);
+      }
     });
 
     // 2. Amazon Specific (data-a-dynamic-image)
@@ -204,7 +238,7 @@ async function scrapeProductData(url, maxImages = 4) {
           const imgData = JSON.parse(dynamicImageEl.attr('data-a-dynamic-image'));
           const urls = Object.keys(imgData);
           for (const u of urls) {
-            if (!images.includes(u) && images.length < maxImages) images.push(u);
+            if (!images.includes(u) && images.length < maxImages && !isLikelyBrandImage(u)) images.push(u);
           }
         } catch (e) { }
       }
@@ -213,7 +247,7 @@ async function scrapeProductData(url, maxImages = 4) {
     // 3. Open Graph image
     if (images.length < maxImages) {
       const ogImage = $('meta[property="og:image"]').attr('content');
-      if (ogImage && !images.includes(ogImage)) images.push(ogImage);
+      if (ogImage && !images.includes(ogImage) && !isLikelyBrandImage(ogImage)) images.push(ogImage);
     }
 
     // 4. Generic product image selectors
@@ -223,8 +257,11 @@ async function scrapeProductData(url, maxImages = 4) {
         let src = $(el).attr('src') || $(el).attr('data-src') || '';
         src = src.replace(/\._[^.]*_\./, '.'); // Amazon hi-res fix
         const classNames = ($(el).attr('class') || '').toLowerCase();
+        const alt = ($(el).attr('alt') || '').toLowerCase();
         if (src && src.startsWith('http') && 
-            !src.includes('logo') && !src.includes('icon') && !src.includes('sprite') &&
+            !isLikelyBrandImage(src) &&
+            !alt.includes('logo') && !alt.includes('brand') &&
+            !classNames.includes('logo') && !classNames.includes('brand') &&
             !images.includes(src)) {
             if (classNames.includes('product') || classNames.includes('image') || src.includes('imageright') || src.includes('image1')) {
                 images.push(src);
@@ -236,7 +273,7 @@ async function scrapeProductData(url, maxImages = 4) {
     // 5. Fallback
     if (images.length === 0) {
       const mainImg = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || $('.product-image img').attr('src');
-      if (mainImg) images.push(mainImg);
+      if (mainImg && !isLikelyBrandImage(mainImg)) images.push(mainImg);
     }
 
   } catch (err) {
@@ -266,11 +303,41 @@ async function downloadImage(url) {
 function autoCategorizeName(productName, existingCategories) {
   const nameLower = productName.toLowerCase();
 
+  // ── Known brand names that should NEVER be used as categories ──
+  const knownBrands = new Set([
+    'boat', 'boult', 'noise', 'zebronics', 'jbl', 'sony', 'samsung', 'apple', 'xiaomi', 'mi',
+    'realme', 'oneplus', 'oppo', 'vivo', 'motorola', 'nokia', 'lg', 'philips', 'panasonic',
+    'hp', 'dell', 'lenovo', 'asus', 'acer', 'msi', 'gigabyte', 'intel', 'amd',
+    'logitech', 'corsair', 'razer', 'steelseries', 'hyperx', 'cooler master',
+    'marshall', 'bose', 'sennheiser', 'skullcandy', 'ptron', 'mivi', 'portronics',
+    'ambrane', 'syska', 'havells', 'bajaj', 'crompton', 'orient', 'usha',
+    'nike', 'adidas', 'puma', 'reebok', 'fila', 'skechers', 'woodland', 'bata',
+    'fastrack', 'titan', 'casio', 'timex', 'fossil', 'fire-boltt', 'fireboltt',
+    'amazon', 'flipkart', 'meesho', 'myntra',
+    'cello', 'classmate', 'faber castell', 'doms', 'camlin', 'natraj',
+    'prestige', 'pigeon', 'hawkins', 'butterfly', 'preethi', 'morphy richards',
+    'wildcraft', 'american tourister', 'safari', 'skybags', 'aristocrat',
+    'lakme', 'maybelline', 'nivea', 'dove', 'garnier', 'pond', 'himalaya',
+    'cadbury', 'nestle', 'parle', 'britannia', 'haldiram', 'amul',
+    'huion', 'wacom', 'anker', 'belkin', 'ugreen', 'amazonbasics',
+    'redgear', 'cosmic byte', 'ant esports', 'wings', 'hammer', 'crossbeats',
+    'colorfit', 'dizo', 'nothing', 'google', 'microsoft', 'creative',
+    'maono', 'fifine', 'blue', 'hyperx', 'kingston', 'sandisk', 'seagate', 'wd', 'toshiba',
+    'bosch', 'makita', 'dewalt', 'stanley', 'black decker',
+    'fujifilm', 'canon', 'nikon', 'gopro', 'dji',
+    'victus', 'loq', 'tuf', 'rog', 'predator', 'inspiron', 'vostro', 'thinkpad', 'ideapad',
+    'iphone', 'pixel', 'galaxy', 'redmi', 'poco', 'nord',
+  ]);
+
+  // Check if a word/phrase is a known brand
+  const isBrand = (text) => knownBrands.has(text.toLowerCase().trim());
+
   // Keywords mapped to common e-commerce categories
   const categoryKeywords = {
-    'Electronics': ['headphone', 'earphone', 'earbuds', 'speaker', 'bluetooth', 'wireless', 'charger', 'adapter', 'cable', 'usb', 'power bank', 'battery', 'led', 'light', 'lamp', 'fan', 'electronic', 'gadget', 'smartwatch', 'watch', 'clock', 'timer', 'sensor', 'remote'],
+    'Electronics': ['headphone', 'earphone', 'earbuds', 'speaker', 'bluetooth', 'wireless', 'charger', 'adapter', 'cable', 'usb', 'power bank', 'battery', 'led', 'light', 'lamp', 'fan', 'electronic', 'gadget', 'smartwatch', 'smart watch', 'watch', 'clock', 'timer', 'sensor', 'remote', 'neckband', 'tws', 'soundbar', 'microphone', 'webcam', 'mouse', 'keyboard'],
     'Laptops': ['laptop', 'notebook', 'macbook', 'chromebook'],
-    'Phones': ['phone', 'mobile', 'smartphone', 'iphone', 'samsung galaxy', 'oneplus', 'pixel'],
+    'Tablets': ['tablet', 'ipad', 'tab'],
+    'Phones': ['phone', 'mobile', 'smartphone'],
     'Stationery': ['pen', 'pencil', 'notebook', 'diary', 'planner', 'marker', 'highlighter', 'eraser', 'sharpener', 'stapler', 'tape', 'glue', 'scissors', 'ruler', 'compass', 'stationery', 'sticky notes', 'paper'],
     'Books': ['book', 'novel', 'textbook', 'guide', 'manual', 'edition', 'paperback', 'hardcover'],
     'Clothing': ['shirt', 'tshirt', 't-shirt', 'hoodie', 'jacket', 'sweater', 'jeans', 'pants', 'trouser', 'shorts', 'dress', 'skirt', 'clothing', 'apparel', 'wear', 'cap', 'hat', 'socks'],
@@ -282,19 +349,11 @@ function autoCategorizeName(productName, existingCategories) {
     'Sports': ['ball', 'bat', 'racket', 'gym', 'fitness', 'yoga', 'sport', 'exercise', 'dumbbell', 'skipping', 'cycling'],
     'Gaming': ['game', 'gaming', 'controller', 'console', 'playstation', 'xbox', 'nintendo', 'joystick', 'mouse pad', 'mousepad'],
     'Beauty & Personal Care': ['perfume', 'deodorant', 'cream', 'lotion', 'shampoo', 'soap', 'face wash', 'moisturizer', 'sunscreen', 'grooming', 'trimmer', 'razor', 'beauty', 'skincare', 'makeup'],
-    'Toys & Games': ['toy', 'puzzle', 'board game', 'rubik', 'fidget', 'spinner', 'lego', 'doll', 'action figure']
+    'Toys & Games': ['toy', 'puzzle', 'board game', 'rubik', 'fidget', 'spinner', 'lego', 'doll', 'action figure'],
+    'Daily Use': ['drawing tablet', 'tablet stand', 'desk', 'organizer', 'storage', 'holder', 'stand', 'mount', 'case', 'cover', 'protector']
   };
 
-  // First, try to match against existing categories (case-insensitive)
-  for (const cat of existingCategories) {
-    const catLower = cat.toLowerCase();
-    // Check if the category name appears in the product name or vice versa
-    if (nameLower.includes(catLower) || catLower.split(' ').some(word => word.length > 3 && nameLower.includes(word))) {
-      return cat;
-    }
-  }
-
-  // Then try keyword matching
+  // First, try keyword matching (most reliable — skip brand-matching with existing categories)
   for (const [category, keywords] of Object.entries(categoryKeywords)) {
     for (const keyword of keywords) {
       if (nameLower.includes(keyword)) {
@@ -305,16 +364,23 @@ function autoCategorizeName(productName, existingCategories) {
     }
   }
 
-  // Fallback: Use the first significant word as a new category
-  const words = productName.split(/\s+/).filter(w => w.length > 3);
-  if (words.length > 0) {
-    const newCat = words[0].charAt(0).toUpperCase() + words[0].slice(1).toLowerCase();
-    // Check if it matches any existing
-    const existingMatch = existingCategories.find(c => c.toLowerCase() === newCat.toLowerCase());
-    return existingMatch || newCat;
+  // Then try to match against existing categories, but SKIP brand-named categories
+  for (const cat of existingCategories) {
+    if (isBrand(cat)) continue; // Skip categories that are brand names
+    const catLower = cat.toLowerCase();
+    if (nameLower.includes(catLower) || catLower.split(' ').some(word => word.length > 3 && nameLower.includes(word))) {
+      return cat;
+    }
   }
 
-  return 'Uncategorized';
+  // Fallback: Use the first non-brand significant word as a category
+  const words = productName.split(/[\s\-_()]+/).filter(w => w.length > 3 && !isBrand(w));
+  // Skip common noise words
+  const noiseWords = new Set(['with', 'from', 'this', 'that', 'pack', 'combo', 'edition', 'series', 'version', 'model', 'inch', 'type', 'style', 'best', 'premium', 'ultra', 'super', 'mega', 'mini', 'lite', 'plus', 'pro']);
+  const meaningful = words.filter(w => !noiseWords.has(w.toLowerCase()));
+
+  // Don't create a new category from random words — use 'General' instead
+  return 'General';
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -368,8 +434,27 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
       const excelPrice = parseInt(priceRaw) || 0;
 
       try {
-        // Auto-categorize
+        // Auto-categorize (brand-aware)
         const category = autoCategorizeName(productName, existingCategories);
+
+        // Auto-detect brand from product name
+        const knownBrandsList = [
+          'boAt', 'Boult', 'Noise', 'Zebronics', 'JBL', 'Sony', 'Samsung', 'Apple', 'Xiaomi', 'Mi',
+          'Realme', 'OnePlus', 'Oppo', 'Vivo', 'Motorola', 'Nokia', 'LG', 'Philips', 'Panasonic',
+          'HP', 'Dell', 'Lenovo', 'Asus', 'Acer', 'MSI', 'Logitech', 'Corsair', 'Razer',
+          'Marshall', 'Bose', 'Sennheiser', 'Skullcandy', 'pTron', 'Mivi', 'Portronics',
+          'Ambrane', 'Syska', 'Havells', 'Bajaj', 'Crompton',
+          'Nike', 'Adidas', 'Puma', 'Reebok', 'Fila', 'Skechers', 'Woodland', 'Bata',
+          'Fastrack', 'Titan', 'Casio', 'Timex', 'Fossil', 'Fire-Boltt',
+          'Cello', 'Classmate', 'Doms', 'Camlin', 'Natraj',
+          'Prestige', 'Pigeon', 'Hawkins', 'Butterfly',
+          'Wildcraft', 'American Tourister', 'Safari', 'Skybags',
+          'HUION', 'Wacom', 'Anker', 'Belkin', 'Ugreen',
+          'Redgear', 'Cosmic Byte', 'Ant Esports', 'Wings', 'Hammer', 'CrossBeats',
+          'Maono', 'Fifine', 'Kingston', 'SanDisk', 'Seagate', 'WD', 'Toshiba',
+          'Canon', 'Nikon', 'GoPro', 'DJI', 'Fujifilm',
+        ];
+        const detectedBrand = knownBrandsList.find(b => productName.toLowerCase().includes(b.toLowerCase())) || '';
 
         // Create category if it doesn't exist
         if (!existingCategories.includes(category)) {
@@ -388,7 +473,7 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
           // Download and upload each image to S3
           for (let j = 0; j < scraped.images.length; j++) {
             const imgBuffer = await downloadImage(scraped.images[j]);
-            if (imgBuffer && imgBuffer.length > 1000) { // Skip tiny/broken images
+            if (imgBuffer && imgBuffer.length > 5000) { // Skip small images/logos (must be >5KB)
               const ext = scraped.images[j].match(/\.(jpg|jpeg|png|webp|gif)/i)?.[1] || 'jpg';
               const filename = `${uuidv4()}.${ext}`;
               const s3Url = await uploadBufferToS3(imgBuffer, `image/${ext}`, filename);
@@ -406,7 +491,7 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         // Insert product
         const insertResult = await db.query(
           'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-          [productName, '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, category, '', 100, false]
+          [productName, '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, category, detectedBrand, 100, false]
         );
         const productId = insertResult.rows[0].id;
 
