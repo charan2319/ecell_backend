@@ -148,20 +148,34 @@ router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res
     }
 });
 
-// Add extra images to a product (multiple)
+// Add extra images to a product (multiple files OR by URL)
 router.post('/:id/images', verifyToken, isAdmin, upload.array('images', 10), async (req, res) => {
     try {
         await ensureProductImagesTable();
         const productId = req.params.id;
-        if (!req.files || req.files.length === 0) return res.status(400).json({ message: 'No images uploaded' });
         const inserted = [];
-        for (const file of req.files) {
+
+        // Support file uploads
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                const r = await db.query(
+                    'INSERT INTO product_images (product_id, image_url) VALUES ($1, $2) RETURNING *',
+                    [productId, file.location]
+                );
+                inserted.push(r.rows[0]);
+            }
+        }
+
+        // Support URL-based image insertion (for scrape-link feature)
+        if (req.body.image_url) {
             const r = await db.query(
                 'INSERT INTO product_images (product_id, image_url) VALUES ($1, $2) RETURNING *',
-                [productId, file.location]
+                [productId, req.body.image_url]
             );
             inserted.push(r.rows[0]);
         }
+
+        if (inserted.length === 0) return res.status(400).json({ message: 'No images provided' });
         res.json(inserted);
     } catch (err) {
         console.error('Error adding product images:', err);

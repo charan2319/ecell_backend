@@ -45,21 +45,70 @@ async function uploadBufferToS3(buffer, contentType, filename) {
   return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 }
 
-// ─── Helper: Scrape Product Data (Images + Price) from Any Site ───
+// ─── Helper: Scrape Product Data (Title + Images + Price) from Any Site ───
 async function scrapeProductData(url, maxImages = 4) {
   const images = [];
   let scrapedPrice = 0;
+  let scrapedTitle = '';
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+        'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
         'Accept-Encoding': 'identity',
-      }
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+      },
+      redirect: 'follow',
     });
     const html = await response.text();
     const $ = cheerio.load(html);
+
+    // ━━━━━━━ TITLE SCRAPING ━━━━━━━
+    // 1. JSON-LD Schema title
+    $('script[type="application/ld+json"]').each((i, el) => {
+      if (scrapedTitle) return;
+      try {
+        const data = JSON.parse($(el).html());
+        const extractTitle = (item) => {
+          if (item && item['@type'] === 'Product' && item.name) return item.name;
+          return '';
+        };
+        if (Array.isArray(data)) {
+          for (const item of data) { const t = extractTitle(item); if (t) { scrapedTitle = t; break; } }
+        } else {
+          scrapedTitle = extractTitle(data);
+          if (!scrapedTitle && data['@graph']) {
+            for (const item of data['@graph']) { const t = extractTitle(item); if (t) { scrapedTitle = t; break; } }
+          }
+        }
+      } catch (e) { }
+    });
+
+    // 2. Amazon-specific title
+    if (!scrapedTitle) {
+      scrapedTitle = $('#productTitle').text().trim() || '';
+    }
+
+    // 3. Flipkart-specific title
+    if (!scrapedTitle) {
+      scrapedTitle = $('.B_NuCI').text().trim() || $('span.VU-ZEz').text().trim() || '';
+    }
+
+    // 4. og:title / meta title fallback
+    if (!scrapedTitle) {
+      scrapedTitle = $('meta[property="og:title"]').attr('content') || $('meta[name="title"]').attr('content') || $('title').text().trim() || '';
+    }
+
+    // Clean up title - remove site name suffixes
+    scrapedTitle = scrapedTitle
+      .replace(/\s*[-|:]\s*(Amazon\.in|Amazon|Flipkart|Myntra|Meesho|Buy Online).*$/i, '')
+      .replace(/\s*:\s*Buy\s+Online.*$/i, '')
+      .replace(/\s*\|\s*Free Shipping.*$/i, '')
+      .trim();
+
+    console.log(`[Scraper] Title found: "${scrapedTitle}" from ${url}`);
 
     // ━━━━━━━ PRICE SCRAPING ━━━━━━━
 
@@ -70,12 +119,16 @@ async function scrapeProductData(url, maxImages = 4) {
         const data = JSON.parse($(el).html());
         const extractPrice = (item) => {
           if (!item) return 0;
-          // Direct offers.price
           if (item.offers) {
             const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
             for (const offer of offers) {
-              const p = parseFloat(offer.price || offer.lowPrice || 0);
+              const p = parseFloat(offer.price || offer.lowPrice || offer.highPrice || 0);
               if (p > 0) return Math.round(p);
+              // Check nested offer within AggregateOffer
+              if (offer['@type'] === 'AggregateOffer') {
+                const lp = parseFloat(offer.lowPrice || offer.highPrice || 0);
+                if (lp > 0) return Math.round(lp);
+              }
             }
           }
           return 0;
@@ -97,14 +150,16 @@ async function scrapeProductData(url, maxImages = 4) {
     // 2. Amazon-specific price selectors
     if (scrapedPrice === 0) {
       const amazonPriceSelectors = [
+        '.priceToPay .a-offscreen',
+        '#corePrice_feature_div .a-offscreen',
+        '#corePriceDisplay_desktop_feature_div .a-offscreen',
         '.a-price .a-offscreen',
         '#priceblock_dealprice',
         '#priceblock_ourprice',
         '#priceblock_saleprice',
         '.a-price-whole',
-        '#corePrice_feature_div .a-offscreen',
-        '#corePriceDisplay_desktop_feature_div .a-offscreen',
-        '.priceToPay .a-offscreen',
+        '#apex_desktop .a-offscreen',
+        '#tp_price_block_total_price_ww .a-offscreen',
       ];
       for (const selector of amazonPriceSelectors) {
         const text = $(selector).first().text().trim();
@@ -121,9 +176,8 @@ async function scrapeProductData(url, maxImages = 4) {
     // 3. Flipkart-specific price selectors
     if (scrapedPrice === 0) {
       const flipkartSelectors = [
-        '._30jeq3', // Flipkart main price
-        '._16Jk6d', // Flipkart deal price
-        '.CEmiEU div._30jeq3',
+        '._30jeq3', '.Nx9bqj._4b5DiR', '.CEmiEU div._30jeq3',
+        '._16Jk6d', '.Nx9bqj',
       ];
       for (const selector of flipkartSelectors) {
         const text = $(selector).first().text().trim();
@@ -137,14 +191,34 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
 
-    // 4. og:price / product:price meta tags
+    // 4. Myntra / Meesho selectors
+    if (scrapedPrice === 0) {
+      const otherSelectors = [
+        '.pdp-price strong', '.pdp-discount-container .pdp-price',
+        '[class*="ProductPrice"]', '[class*="DiscountedPrice"]',
+      ];
+      for (const selector of otherSelectors) {
+        const text = $(selector).first().text().trim();
+        if (text) {
+          const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+          if (match) {
+            const p = parseFloat(match[0]);
+            if (p > 0) { scrapedPrice = Math.round(p); break; }
+          }
+        }
+      }
+    }
+
+    // 5. og:price / product:price meta tags
     if (scrapedPrice === 0) {
       const priceMetas = [
         $('meta[property="og:price:amount"]').attr('content'),
         $('meta[property="product:price:amount"]').attr('content'),
         $('meta[name="twitter:data1"]').attr('content'),
         $('meta[name="twitter:data2"]').attr('content'),
-        $('meta[itemprop="price"]').attr('content')
+        $('meta[itemprop="price"]').attr('content'),
+        $('[itemprop="price"]').attr('content'),
+        $('[itemprop="price"]').text().trim(),
       ];
       for (const metaPrice of priceMetas) {
         if (!metaPrice) continue;
@@ -156,18 +230,17 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
 
-    // 5. Generic fallback: look for ₹ or Rs. followed by a number anywhere in common price containers
+    // 6. Generic fallback: look for ₹ or Rs. followed by a number
     if (scrapedPrice === 0) {
       const priceContainers = [
-        '[class*="price"]', '[class*="Price"]',
+        '[class*="price"]', '[class*="Price"]', '[class*="PRICE"]',
         '[id*="price"]', '[id*="Price"]',
-        '[class*="cost"]', '[class*="amount"]',
+        '[class*="cost"]', '[class*="amount"]', '[class*="selling"]',
       ];
       for (const selector of priceContainers) {
         $(selector).each((i, el) => {
           if (scrapedPrice > 0) return;
           const text = $(el).text();
-          // Match ₹1,234 or Rs. 1234 or INR 1234 patterns
           const match = text.match(/(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.\d{1,2})?)/);
           if (match) {
             const p = parseFloat(match[1].replace(/,/g, ''));
@@ -178,143 +251,190 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
 
+    // 7. Last resort: scan entire HTML for price pattern
+    if (scrapedPrice === 0) {
+      const bodyText = $('body').text();
+      const priceMatches = bodyText.match(/₹\s*([0-9,]+)/g);
+      if (priceMatches && priceMatches.length > 0) {
+        // Take the first reasonable price
+        for (const pm of priceMatches) {
+          const val = parseFloat(pm.replace(/[₹,\s]/g, ''));
+          if (val > 50 && val < 500000) { scrapedPrice = Math.round(val); break; }
+        }
+      }
+    }
+
     console.log(`[Scraper] Price found: ₹${scrapedPrice} from ${url}`);
 
     // ━━━━━━━ IMAGE SCRAPING ━━━━━━━
 
-    // Brand/logo keywords to filter out from image URLs
-    const brandLogoFilters = [
-      'logo', 'brand', 'badge', 'banner', 'sprite', 'icon', 'favicon',
-      'seller', 'store', 'shop-logo', 'merchant',
-      'boat-logo', 'noise-logo', 'jbl-logo', 'sony-logo',
-      'trust-badge', 'payment', 'guarantee', 'warranty',
-      'rating', 'star', 'review',
-      'advertisement', 'promo', 'coupon', 'offer-badge',
-      'placeholder', 'loading', 'lazy',
-    ];
-
-    // Known brand image URL patterns (brand name appears as the primary image content, not the product)
-    const brandImagePatterns = [
-      /\/brand[s]?\//i,
-      /\/logo[s]?\//i,
-      /brand[-_]?logo/i,
-      /store[-_]?logo/i,
-      /seller[-_]?logo/i,
-    ];
-
-    const isLikelyBrandImage = (url) => {
-      const urlLower = url.toLowerCase();
-      // Check against filter keywords
-      if (brandLogoFilters.some(f => urlLower.includes(f))) return true;
-      // Check against regex patterns
-      if (brandImagePatterns.some(p => p.test(url))) return true;
-      // Check if the URL is a very small image (badge-like dimensions in URL)
-      if (/\b\d{1,2}x\d{1,2}\b/.test(url)) return true; // e.g., 20x20, 16x16
+    const isLikelyBrandImage = (imgUrl) => {
+      const urlLower = imgUrl.toLowerCase();
+      const brandFilters = [
+        'logo', 'badge', 'banner', 'sprite', 'icon', 'favicon',
+        'seller', 'shop-logo', 'merchant', 'trust-badge', 'payment',
+        'guarantee', 'warranty', 'rating', 'star-', 'review',
+        'advertisement', 'promo', 'coupon', 'offer-badge',
+        'placeholder', 'loading', 'lazy-load', 'pixel', 'spacer',
+        'arrow', 'checkbox', 'radio', 'button', 'close', 'search',
+        'cart', 'wishlist', 'share', 'compare',
+      ];
+      if (brandFilters.some(f => urlLower.includes(f))) return true;
+      if (/\/brand[s]?\//i.test(imgUrl)) return true;
+      if (/\/logo[s]?\//i.test(imgUrl)) return true;
+      // Small dimension images in URL
+      if (/\b\d{1,2}x\d{1,2}\b/.test(imgUrl)) return true;
+      // Base64 data URIs or SVGs
+      if (imgUrl.startsWith('data:')) return true;
+      // Very short URLs are usually icons
+      if (imgUrl.length < 30) return true;
       return false;
     };
 
-    // 1. JSON-LD Schema images
-    let schemaImages = [];
+    const addImage = (src) => {
+      if (!src || images.length >= maxImages) return false;
+      if (!src.startsWith('http')) return false;
+      if (isLikelyBrandImage(src)) return false;
+      if (images.includes(src)) return false;
+      // Deduplicate by removing Amazon size suffixes for comparison
+      const normalized = src.replace(/\._[A-Z]{2}\d+_\./, '.');
+      if (images.some(existing => existing.replace(/\._[A-Z]{2}\d+_\./, '.') === normalized)) return false;
+      images.push(src);
+      return true;
+    };
+
+    // 1. JSON-LD Schema images (most reliable)
     $('script[type="application/ld+json"]').each((i, el) => {
       try {
         const data = JSON.parse($(el).html());
         const extractImages = (item) => {
           if (item && item['@type'] === 'Product' && item.image) {
-            if (Array.isArray(item.image)) schemaImages.push(...item.image);
-            else if (typeof item.image === 'string') schemaImages.push(item.image);
+            const imgs = Array.isArray(item.image) ? item.image : [item.image];
+            imgs.forEach(img => {
+              if (typeof img === 'string') addImage(img);
+              else if (img && img.url) addImage(img.url);
+            });
           }
         };
         if (Array.isArray(data)) data.forEach(extractImages);
-        else extractImages(data);
-        if (data && data['@graph']) data['@graph'].forEach(extractImages);
+        else { extractImages(data); if (data && data['@graph']) data['@graph'].forEach(extractImages); }
       } catch (e) { }
     });
-    
-    // Filter schema images for brand logos before adding
-    schemaImages.forEach(img => {
-      if (img && !images.includes(img) && images.length < maxImages && !isLikelyBrandImage(img)) {
-        images.push(img);
-      }
-    });
 
-    // 2. Amazon Specific (data-a-dynamic-image)
+    // 2. Amazon: data-a-dynamic-image (main image with all variants)
     if (images.length < maxImages) {
       const dynamicImageEl = $('[data-a-dynamic-image]').first();
       if (dynamicImageEl.length) {
         try {
           const imgData = JSON.parse(dynamicImageEl.attr('data-a-dynamic-image'));
-          const urls = Object.keys(imgData);
-          for (const u of urls) {
-            if (!images.includes(u) && images.length < maxImages && !isLikelyBrandImage(u)) images.push(u);
-          }
+          // Sort by image dimensions (largest first)
+          const urls = Object.entries(imgData).sort((a, b) => {
+            const aSize = a[1][0] * a[1][1]; const bSize = b[1][0] * b[1][1];
+            return bSize - aSize;
+          }).map(e => e[0]);
+          urls.forEach(u => addImage(u));
         } catch (e) { }
       }
     }
 
-    // 3. Open Graph image and other meta tags
+    // 3. Amazon: altImages / thumbnail strip (gets multiple product angles)
     if (images.length < maxImages) {
-      const metaTags = ['og:image', 'twitter:image', 'itemprop="image"'];
-      metaTags.forEach(tag => {
-        let content;
-        if (tag.includes('=')) content = $(`meta[${tag}]`).attr('content');
-        else content = $(`meta[property="${tag}"]`).attr('content') || $(`meta[name="${tag}"]`).attr('content');
-        if (content && !images.includes(content) && !isLikelyBrandImage(content)) {
-          images.push(content);
-        }
+      $('#altImages img, #imageBlock img, .imageThumbnail img, li.image img').each((i, el) => {
+        if (images.length >= maxImages) return;
+        let src = $(el).attr('src') || $(el).attr('data-src') || '';
+        // Convert Amazon thumbnails to high-res
+        src = src.replace(/\._[A-Z]{2}\d+_\./, '.');
+        src = src.replace(/\._S[A-Z]\d+_\./, '.');
+        addImage(src);
       });
     }
 
-    // 4. Generic product image selectors (ONLY inside product containers)
+    // 4. Flipkart: product image gallery
+    if (images.length < maxImages) {
+      // Flipkart thumbnail strip
+      $('._2E1FGS img, ._3kidJX img, .CXW8mj img, ._1BweB8 img, ._2r_T1I img, ._396cs4 img, .q6DClP img').each((i, el) => {
+        if (images.length >= maxImages) return;
+        let src = $(el).attr('src') || $(el).attr('data-src') || '';
+        // Flipkart: upgrade thumbnail to full-size (128 -> 416)
+        src = src.replace(/\/128\/128\//g, '/416/416/');
+        src = src.replace(/\/image\/128\//g, '/image/416/');
+        addImage(src);
+      });
+    }
+
+    // 5. Open Graph + Twitter + itemprop meta images
+    if (images.length < maxImages) {
+      const metaImgSelectors = [
+        'meta[property="og:image"]', 'meta[property="og:image:secure_url"]',
+        'meta[name="twitter:image"]', 'meta[name="twitter:image:src"]',
+        'meta[itemprop="image"]',
+      ];
+      metaImgSelectors.forEach(sel => {
+        const content = $(sel).attr('content');
+        if (content) addImage(content);
+      });
+    }
+
+    // 6. Generic product containers
     if (images.length < maxImages) {
       const productContainers = [
         '#imgTagWrapperId', '.product-image', '.gallery-image', '.product-gallery',
         '.main-image', '[data-gallery]', '.slick-track', '.swiper-wrapper',
-        '.woocommerce-product-gallery__image', '.product-main-image', '._396cs4', '._2r_T1I'
+        '.woocommerce-product-gallery__image', '.product-main-image',
+        '.pdp-image', '.product-detail-image', '[class*="ProductImage"]',
+        '.image-grid', '.product-photos',
       ];
-      
       productContainers.forEach(container => {
         $(container).find('img').each((i, el) => {
           if (images.length >= maxImages) return;
-          let src = $(el).attr('src') || $(el).attr('data-src') || '';
-          src = src.replace(/\._[^.]*_\./, '.'); // Amazon hi-res fix
-          const classNames = ($(el).attr('class') || '').toLowerCase();
+          let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-zoom-image') || '';
+          src = src.replace(/\._[A-Z]{2}\d+_\./, '.'); // Amazon hi-res fix
           const alt = ($(el).attr('alt') || '').toLowerCase();
-          if (src && src.startsWith('http') && 
-              !isLikelyBrandImage(src) &&
-              !alt.includes('logo') &&
-              !classNames.includes('logo') &&
-              !images.includes(src)) {
-              images.push(src);
-          }
+          if (!alt.includes('logo') && !alt.includes('icon')) addImage(src);
         });
       });
     }
 
-    // 5. Fallback (Strict exact IDs only)
+    // 7. Fallback exact IDs
     if (images.length === 0) {
-      const mainImg = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || $('.product-image img').first().attr('src');
-      if (mainImg && mainImg.startsWith('http') && !isLikelyBrandImage(mainImg)) images.push(mainImg);
+      const fallbackIds = ['#landingImage', '#imgBlkFront', '#main-image', '.product-image img'];
+      for (const sel of fallbackIds) {
+        const src = $(sel).attr('src') || $(sel).attr('data-src') || '';
+        if (addImage(src)) break;
+      }
     }
     
-    // 6. Deep Fallback IF STILL 0 IMAGES (Try targeting large images to avoid related-product noise)
+    // 8. Deep fallback: scan page for large product-like images
     if (images.length === 0) {
+      const allImgs = [];
       $('img').each((i, el) => {
-        if (images.length > 0) return;
         const src = $(el).attr('src') || $(el).attr('data-src') || '';
         const alt = ($(el).attr('alt') || '').toLowerCase();
+        const width = parseInt($(el).attr('width') || '0');
+        const height = parseInt($(el).attr('height') || '0');
         if (src && src.startsWith('http') && !isLikelyBrandImage(src) && !alt.includes('logo') && !alt.includes('icon')) {
-          // If URL looks like a high-res structure (e.g., 416x416) or alt text is descriptive
-          if (/\b\d{3,}x\d{3,}\b/.test(src) || src.includes('/416/416/') || src.includes('product') || src.includes('large') || alt.length > 20) {
-            images.push(src);
-          }
+          // Score images: larger dimensions or product-like URLs get higher scores
+          let score = 0;
+          if (width > 200 || height > 200) score += 3;
+          if (/\b\d{3,}x\d{3,}\b/.test(src)) score += 2;
+          if (src.includes('product') || src.includes('large') || src.includes('zoom')) score += 2;
+          if (alt.length > 15) score += 1;
+          if (width > 50 && width < 100) score -= 2; // Thumbnails
+          allImgs.push({ src, score });
         }
       });
+      // Sort by score descending and take the best ones
+      allImgs.sort((a, b) => b.score - a.score);
+      for (const img of allImgs) {
+        if (!addImage(img.src)) continue;
+        if (images.length >= maxImages) break;
+      }
     }
 
   } catch (err) {
     console.error(`Error scraping URL ${url}:`, err.message);
   }
-  return { images: images.slice(0, maxImages), price: scrapedPrice };
+  return { images: images.slice(0, maxImages), price: scrapedPrice, title: scrapedTitle };
 }
 
 // ─── Helper: Download image from URL and return buffer ───
@@ -583,4 +703,51 @@ router.get('/bulk-upload/template', (req, res) => {
   });
 });
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// POST /api/products/scrape-link
+// Scrape product data from a single link (for "Add by Link" feature)
+// Returns: { title, price, images[], imageUrls[] }
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url || !url.trim()) {
+      return res.status(400).json({ message: 'URL is required' });
+    }
+
+    console.log(`[Scrape Link] Scraping: ${url}`);
+    const scraped = await scrapeProductData(url.trim(), 6);
+
+    // Download and upload images to S3
+    const s3ImageUrls = [];
+    for (let j = 0; j < scraped.images.length; j++) {
+      try {
+        const imgBuffer = await downloadImage(scraped.images[j]);
+        if (imgBuffer && imgBuffer.length > 5000) {
+          const ext = scraped.images[j].match(/\.(jpg|jpeg|png|webp|gif)/i)?.[1] || 'jpg';
+          const filename = `${uuidv4()}.${ext}`;
+          const s3Url = await uploadBufferToS3(imgBuffer, `image/${ext}`, filename);
+          s3ImageUrls.push(s3Url);
+        }
+      } catch (imgErr) {
+        console.error(`[Scrape Link] Failed to download/upload image ${j}:`, imgErr.message);
+      }
+    }
+
+    console.log(`[Scrape Link] ✅ Title: "${scraped.title}" | Price: ₹${scraped.price} | Images: ${s3ImageUrls.length}`);
+
+    res.json({
+      title: scraped.title || '',
+      price: scraped.price || 0,
+      originalImages: scraped.images,
+      imageUrls: s3ImageUrls,
+    });
+
+  } catch (err) {
+    console.error('[Scrape Link] Error:', err);
+    res.status(500).json({ message: 'Failed to scrape link: ' + err.message });
+  }
+});
+
 module.exports = router;
+
