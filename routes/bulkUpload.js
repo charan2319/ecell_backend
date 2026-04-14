@@ -250,30 +250,35 @@ async function scrapeProductData(url, maxImages = 4) {
       if (ogImage && !images.includes(ogImage) && !isLikelyBrandImage(ogImage)) images.push(ogImage);
     }
 
-    // 4. Generic product image selectors
+    // 4. Generic product image selectors (ONLY inside product containers)
     if (images.length < maxImages) {
-      $('img').each((i, el) => {
-        if (images.length >= maxImages) return;
-        let src = $(el).attr('src') || $(el).attr('data-src') || '';
-        src = src.replace(/\._[^.]*_\./, '.'); // Amazon hi-res fix
-        const classNames = ($(el).attr('class') || '').toLowerCase();
-        const alt = ($(el).attr('alt') || '').toLowerCase();
-        if (src && src.startsWith('http') && 
-            !isLikelyBrandImage(src) &&
-            !alt.includes('logo') && !alt.includes('brand') &&
-            !classNames.includes('logo') && !classNames.includes('brand') &&
-            !images.includes(src)) {
-            if (classNames.includes('product') || classNames.includes('image') || src.includes('imageright') || src.includes('image1')) {
-                images.push(src);
-            }
-        }
+      const productContainers = [
+        '#imgTagWrapperId', '.product-image', '.gallery-image', '.product-gallery',
+        '.main-image', '[data-gallery]', '.slick-track', '.swiper-wrapper'
+      ];
+      
+      productContainers.forEach(container => {
+        $(container).find('img').each((i, el) => {
+          if (images.length >= maxImages) return;
+          let src = $(el).attr('src') || $(el).attr('data-src') || '';
+          src = src.replace(/\._[^.]*_\./, '.'); // Amazon hi-res fix
+          const classNames = ($(el).attr('class') || '').toLowerCase();
+          const alt = ($(el).attr('alt') || '').toLowerCase();
+          if (src && src.startsWith('http') && 
+              !isLikelyBrandImage(src) &&
+              !alt.includes('logo') &&
+              !classNames.includes('logo') &&
+              !images.includes(src)) {
+              images.push(src);
+          }
+        });
       });
     }
 
-    // 5. Fallback
+    // 5. Fallback (Strict exact IDs only)
     if (images.length === 0) {
-      const mainImg = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || $('.product-image img').attr('src');
-      if (mainImg && !isLikelyBrandImage(mainImg)) images.push(mainImg);
+      const mainImg = $('#landingImage').attr('src') || $('#imgBlkFront').attr('src') || $('.product-image img').first().attr('src');
+      if (mainImg && mainImg.startsWith('http') && !isLikelyBrandImage(mainImg)) images.push(mainImg);
     }
 
   } catch (err) {

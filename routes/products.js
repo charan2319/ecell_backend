@@ -245,6 +245,54 @@ router.delete('/clear-all/confirm', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
+// ─── Promote Extra Image to Main Image ───
+router.put('/:id/promote-image/:imageId', verifyToken, isAdmin, async (req, res) => {
+    const client = await db.pool.connect();
+    try {
+        const { id, imageId } = req.params;
+        
+        await client.query('BEGIN');
+        
+        // 1. Get the current product main image
+        const productRes = await client.query('SELECT image_url FROM products WHERE id = $1', [id]);
+        if (productRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Product not found' });
+        }
+        const oldMainImage = productRes.rows[0].image_url;
+        
+        // 2. Get the extra image URL
+        const imageRes = await client.query('SELECT image_url FROM product_images WHERE id = $1 AND product_id = $2', [imageId, id]);
+        if (imageRes.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Extra image not found' });
+        }
+        const newMainImage = imageRes.rows[0].image_url;
+        
+        // 3. Swap them
+        // Update product table with new main image
+        await client.query('UPDATE products SET image_url = $1 WHERE id = $2', [newMainImage, id]);
+        
+        // Update product_images table to replace the extra image with the old main image
+        // (if the old main image existed)
+        if (oldMainImage && oldMainImage.trim() !== '') {
+            await client.query('UPDATE product_images SET image_url = $1 WHERE id = $2', [oldMainImage, imageId]);
+        } else {
+            // if product had no main image previously, just delete the extra image row since it's promoted
+            await client.query('DELETE FROM product_images WHERE id = $1', [imageId]);
+        }
+        
+        await client.query('COMMIT');
+        res.json({ message: 'Image promoted successfully', new_main_image: newMainImage });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error promoting image:', err);
+        res.status(500).json({ message: 'Server error: ' + err.message });
+    } finally {
+        client.release();
+    }
+});
+
 module.exports = router;
 
 
