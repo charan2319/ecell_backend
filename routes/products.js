@@ -185,13 +185,20 @@ router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
     try {
         await client.query('BEGIN');
         
-        // 1. Delete dependent order items to satisfy foreign key constraints
-        await client.query('DELETE FROM order_items WHERE product_id = $1', [req.params.id]);
+        // 1. Snapshot product details into order_items before deletion
+        //    (for any order items that haven't been snapshotted yet)
+        await client.query(`
+            UPDATE order_items oi
+            SET product_name = p.name, product_image = p.image_url
+            FROM products p
+            WHERE oi.product_id = p.id AND oi.product_id = $1
+        `, [req.params.id]);
         
         // 2. Delete any extra product images
         await client.query('DELETE FROM product_images WHERE product_id = $1', [req.params.id]);
         
         // 3. Delete the product itself
+        //    (order_items.product_id will be SET NULL automatically via FK constraint)
         await client.query('DELETE FROM products WHERE id = $1', [req.params.id]);
         
         await client.query('COMMIT');
@@ -211,18 +218,23 @@ router.delete('/clear-all/confirm', verifyToken, isAdmin, async (req, res) => {
     try {
         await client.query('BEGIN');
         
-        // 1. Delete all order items (foreign key to products)
-        await client.query('DELETE FROM order_items');
+        // 1. Snapshot ALL product details into order_items before deletion
+        await client.query(`
+            UPDATE order_items oi
+            SET product_name = p.name, product_image = p.image_url
+            FROM products p
+            WHERE oi.product_id = p.id AND oi.product_name IS NULL
+        `);
         
         // 2. Delete all product images
         await client.query('DELETE FROM product_images');
         
-        // 3. Delete all products
+        // 3. Delete all products (order_items.product_id will be SET NULL automatically)
         const result = await client.query('DELETE FROM products');
         
         await client.query('COMMIT');
         
-        console.log(`[Clear All] ✅ Deleted ${result.rowCount} products`);
+        console.log(`[Clear All] ✅ Deleted ${result.rowCount} products (order history preserved)`);
         res.json({ message: `All ${result.rowCount} products deleted successfully`, count: result.rowCount });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -234,4 +246,5 @@ router.delete('/clear-all/confirm', verifyToken, isAdmin, async (req, res) => {
 });
 
 module.exports = router;
+
 
