@@ -333,11 +333,8 @@ async function scrapeProductData(url, maxImages = 4) {
       if (dynamicImageEl.length) {
         try {
           const imgData = JSON.parse(dynamicImageEl.attr('data-a-dynamic-image'));
-          // Sort by image dimensions (largest first)
-          const urls = Object.entries(imgData).sort((a, b) => {
-            const aSize = a[1][0] * a[1][1]; const bSize = b[1][0] * b[1][1];
-            return bSize - aSize;
-          }).map(e => e[0]);
+          // Take all URLs from the dynamic image data
+          const urls = Object.keys(imgData);
           urls.forEach(u => addImage(u));
         } catch (e) { }
       }
@@ -345,30 +342,50 @@ async function scrapeProductData(url, maxImages = 4) {
 
     // 3. Amazon: altImages / thumbnail strip (gets multiple product angles)
     if (images.length < maxImages) {
-      $('#altImages img, #imageBlock img, .imageThumbnail img, li.image img').each((i, el) => {
+      $('#altImages img, #imageBlock img, .imageThumbnail img, li.image img, .maintain-height img').each((i, el) => {
         if (images.length >= maxImages) return;
-        let src = $(el).attr('src') || $(el).attr('data-src') || '';
-        // Convert Amazon thumbnails to high-res
+        let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-old-hires') || '';
+        if (!src) return;
+        // Convert Amazon thumbnails/placeholders to high-res
         src = src.replace(/\._[A-Z]{2}\d+_\./, '.');
         src = src.replace(/\._S[A-Z]\d+_\./, '.');
+        src = src.replace(/\._AC_[A-Z]{2}\d+_\./, '.');
         addImage(src);
       });
     }
 
     // 4. Flipkart: product image gallery
     if (images.length < maxImages) {
-      // Flipkart thumbnail strip
-      $('._2E1FGS img, ._3kidJX img, .CXW8mj img, ._1BweB8 img, ._2r_T1I img, ._396cs4 img, .q6DClP img').each((i, el) => {
+      // Flipkart thumbnail strip and main image containers
+      $('._2E1FGS img, ._3kidJX img, .CXW8mj img, ._1BweB8 img, ._2r_T1I img, ._396cs4 img, .q6DClP img, ._2AmZ0f img, [src*="static/v1/"] img').each((i, el) => {
         if (images.length >= maxImages) return;
         let src = $(el).attr('src') || $(el).attr('data-src') || '';
-        // Flipkart: upgrade thumbnail to full-size (128 -> 416)
-        src = src.replace(/\/128\/128\//g, '/416/416/');
-        src = src.replace(/\/image\/128\//g, '/image/416/');
+        if (!src) return;
+        // Flipkart: upgrade thumbnail to full-size (128 -> 832 or 416)
+        src = src.replace(/\/128\/128\//g, '/832/832/');
+        src = src.replace(/\/image\/128\//g, '/image/832/');
+        src = src.replace(/\/image\/416\//g, '/image/832/');
         addImage(src);
       });
     }
 
-    // 5. Open Graph + Twitter + itemprop meta images
+    // 5. Generic Gallery / Carousel Selectors (Slick, Swiper, Owl, etc.)
+    if (images.length < maxImages) {
+      const gallerySelectors = [
+        '.slick-slide img', '.swiper-slide img', '.owl-item img', 
+        '.gallery-item img', '.product-gallery img', '.pdp-gallery img',
+        '.main-image-wrapper img', '.zoomContainer img', '.img-zoom img'
+      ];
+      gallerySelectors.forEach(sel => {
+        $(sel).each((i, el) => {
+          if (images.length >= maxImages) return;
+          const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-high-res') || '';
+          if (src) addImage(src);
+        });
+      });
+    }
+
+    // 6. Open Graph + Twitter + itemprop meta images
     if (images.length < maxImages) {
       const metaImgSelectors = [
         'meta[property="og:image"]', 'meta[property="og:image:secure_url"]',
@@ -381,7 +398,7 @@ async function scrapeProductData(url, maxImages = 4) {
       });
     }
 
-    // 6. Generic product containers
+    // 7. Generic product containers (Fuzzy)
     if (images.length < maxImages) {
       const productContainers = [
         '#imgTagWrapperId', '.product-image', '.gallery-image', '.product-gallery',
@@ -394,14 +411,19 @@ async function scrapeProductData(url, maxImages = 4) {
         $(container).find('img').each((i, el) => {
           if (images.length >= maxImages) return;
           let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-zoom-image') || '';
+          if (!src) return;
           src = src.replace(/\._[A-Z]{2}\d+_\./, '.'); // Amazon hi-res fix
           const alt = ($(el).attr('alt') || '').toLowerCase();
-          if (!alt.includes('logo') && !alt.includes('icon')) addImage(src);
+          const pClass = ($(el).attr('class') || '').toLowerCase();
+          // Exclude icons but include anything marked as gallery/product/angle
+          if (!alt.includes('logo') && !alt.includes('icon')) {
+             addImage(src);
+          }
         });
       });
     }
 
-    // 7. Fallback exact IDs
+    // 8. Fallback exact IDs
     if (images.length === 0) {
       const fallbackIds = ['#landingImage', '#imgBlkFront', '#main-image', '.product-image img'];
       for (const sel of fallbackIds) {
@@ -410,13 +432,14 @@ async function scrapeProductData(url, maxImages = 4) {
       }
     }
     
-    // 4. Fuzzy DOM scan (large images only)
+    // 9. Fuzzy DOM scan (large images only)
     if (images.length < maxImages) {
       $('img').each((i, el) => {
         if (images.length >= maxImages) return;
         const width = parseInt($(el).attr('width') || '0');
         const height = parseInt($(el).attr('height') || '0');
         const src = $(el).attr('src') || $(el).attr('data-src') || '';
+        if (!src) return;
         // If image is reasonably large or explicitly marked as product
         if (width > 250 || height > 250 || (src.includes('product') && !isLikelyBrandImage(src))) {
           addImage(src);
@@ -694,7 +717,7 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
     }
 
     console.log(`[Scrape Link] Scraping: ${url}`);
-    const scraped = await scrapeProductData(url.trim(), 6);
+    const scraped = await scrapeProductData(url.trim(), 10);
 
     // Download and upload images to S3
     const s3ImageUrls = [];
