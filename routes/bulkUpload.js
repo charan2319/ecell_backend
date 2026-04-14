@@ -415,15 +415,6 @@ async function scrapeProductData(url, maxImages = 4) {
 
     console.log(`[Scraper] Images found: ${images.length}`);
 
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      console.error(`[Scraper] Timeout scraping ${url}`);
-      throw new Error('Request timed out. The site is taking too long to respond.');
-    }
-    console.error(`[Scraper] Error scraping ${url}:`, err.message);
-    throw err;
-  }
-  
   return { 
     images: images.slice(0, maxImages), 
     price: scrapedPrice, 
