@@ -10,6 +10,22 @@ require('dotenv').config();
 
 const router = express.Router();
 
+// Ensure categories table exists and is populated from products
+const ensureCategoriesTable = async () => {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS categories (
+            name TEXT PRIMARY KEY
+        )
+    `);
+    // Sync existing categories from products table
+    await db.query(`
+        INSERT INTO categories (name)
+        SELECT DISTINCT category FROM products
+        WHERE category IS NOT NULL AND category != ''
+        ON CONFLICT (name) DO NOTHING
+    `);
+};
+
 // Multer: store Excel file in memory
 const excelUpload = multer({
   storage: multer.memoryStorage(),
@@ -617,9 +633,9 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
       )
     `);
 
+    // 3. Process rows
     const results = [];
-    const errors = [];
-
+    await ensureCategoriesTable();
     for (let i = 0; i < rows.length; i++) {
       const row = rows[i];
       // Support multiple possible column header names
@@ -749,6 +765,7 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
     }
 
     console.log(`[Scrape Link] Scraping: ${url}`);
+    await ensureCategoriesTable();
     const scraped = await scrapeProductData(url.trim(), 4);
 
     // Download and upload images to S3

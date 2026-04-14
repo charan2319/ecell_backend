@@ -4,6 +4,22 @@ const upload = require('../utils/upload');
 const router = express.Router();
 const { verifyToken, isAdmin } = require('../middleware/auth');
 
+// Ensure categories table exists and is populated from products
+const ensureCategoriesTable = async () => {
+    await db.query(`
+        CREATE TABLE IF NOT EXISTS categories (
+            name TEXT PRIMARY KEY
+        )
+    `);
+    // Sync existing categories from products table
+    await db.query(`
+        INSERT INTO categories (name)
+        SELECT DISTINCT category FROM products
+        WHERE category IS NOT NULL AND category != ''
+        ON CONFLICT (name) DO NOTHING
+    `);
+};
+
 // Ensure product_images table exists
 const ensureProductImagesTable = async () => {
     await db.query(`
@@ -38,6 +54,7 @@ router.get('/', async (req, res) => {
 
 router.get('/categories', async (req, res) => {
     try {
+        await ensureCategoriesTable();
         const result = await db.query('SELECT name FROM categories ORDER BY name ASC');
         res.json(result.rows.map(r => r.name));
     } catch (err) {
@@ -117,6 +134,7 @@ router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) 
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
+        await ensureCategoriesTable();
         const safeCat = category || 'Uncategorized';
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
 
@@ -146,6 +164,7 @@ router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
+        await ensureCategoriesTable();
         const safeCat = category || 'Uncategorized';
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
 
