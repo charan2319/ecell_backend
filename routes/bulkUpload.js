@@ -62,51 +62,89 @@ async function uploadBufferToS3(buffer, contentType, filename) {
   return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 }
 
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0'
+];
+
+const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+const randomDelay = (ms = 1000) => new Promise(res => setTimeout(res, Math.random() * ms + 500));
+
 // ─── Helper: Scrape Product Data (Title + Images + Price) from Any Site ───
 async function scrapeProductData(url, maxImages = 4) {
   const images = [];
   let scrapedPrice = 0;
   let scrapedTitle = '';
   
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
-
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+  let html = '';
+  let lastStatus = 0;
+  
+  // Adaptive Retry Loop
+  const strategies = [
+    { name: 'Browser-Full', headers: (ua) => ({
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept-Encoding': 'gzip, deflate, br',
         'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
+        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'Sec-Ch-Ua-Mobile': ua.includes('iPhone') ? '?1' : '?0',
+        'Sec-Ch-Ua-Platform': ua.includes('Windows') ? '"Windows"' : (ua.includes('Mac') ? '"macOS"' : '"Linux"'),
         'Referer': 'https://www.google.com/',
-      },
-      timeout: 15000,
-      signal: controller.signal,
-      validateStatus: () => true, // Handle 404/403 gracefully
-    });
+        'Upgrade-Insecure-Requests': '1'
+    })},
+    { name: 'Stealth-Minimal', headers: (ua) => ({
+        'User-Agent': ua,
+        'Accept': '*/*',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1'
+    })}
+  ];
 
-    clearTimeout(timeout);
+  for (let i = 0; i < strategies.length; i++) {
+    const strategy = strategies[i];
+    const ua = getRandomUA();
+    
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20000);
 
-    if (response.status !== 200) {
-      console.warn(`[Scraper] Failed to fetch ${url}. Status: ${response.status}`);
-      if (response.status === 403 || response.status === 503) {
-        throw new Error(`Access denied by ${new URL(url).hostname}. The site is blocking automated requests.`);
+      const response = await axios.get(url, {
+        headers: strategy.headers(ua),
+        timeout: 15000,
+        signal: controller.signal,
+        validateStatus: () => true,
+      });
+
+      clearTimeout(timeout);
+      lastStatus = response.status;
+
+      if (response.status === 200) {
+        html = response.data;
+        console.log(`[Scraper] Successfully fetched with strategy: ${strategy.name} (${url})`);
+        break; 
       }
-      throw new Error(`Server returned status ${response.status}`);
+      
+      console.warn(`[Scraper] Strategy ${strategy.name} failed with status ${response.status} for ${url}`);
+      if (i < strategies.length - 1) await randomDelay(1500); // Wait before next try
+      
+    } catch (err) {
+      console.error(`[Scraper] Strategy ${strategy.name} errored: ${err.message}`);
+      if (i < strategies.length - 1) await randomDelay(1500);
     }
+  }
 
-    const html = response.data;
-    const $ = cheerio.load(html);
+  if (!html) {
+    if (lastStatus === 403 || lastStatus === 429 || lastStatus === 503) {
+      throw new Error(`Access denied by ${new URL(url).hostname}. The site is currently blocking automated requests. Please try again in a few minutes or use a different link.`);
+    }
+    throw new Error(`Failed to fetch content from ${url} (Status: ${lastStatus})`);
+  }
+
+  const $ = cheerio.load(html);
 
     // Helper to find data in JSON-LD
     const findInJsonLd = (targetType, callback) => {
