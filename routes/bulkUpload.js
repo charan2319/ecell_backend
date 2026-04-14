@@ -71,13 +71,15 @@ async function scrapeProductData(url, maxImages = 4) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000); // 20s timeout
 
-    const response = await fetch(url, {
+    const response = await axios.get(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Accept-Encoding': 'identity',
-        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Ch-Ua': '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
         'Sec-Ch-Ua-Mobile': '?0',
         'Sec-Ch-Ua-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'document',
@@ -86,16 +88,15 @@ async function scrapeProductData(url, maxImages = 4) {
         'Sec-Fetch-User': '?1',
         'Upgrade-Insecure-Requests': '1',
         'Referer': 'https://www.google.com/',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
       },
-      redirect: 'follow',
-      signal: controller.signal
+      timeout: 15000,
+      signal: controller.signal,
+      validateStatus: () => true, // Handle 404/403 gracefully
     });
 
     clearTimeout(timeout);
 
-    if (!response.ok) {
+    if (response.status !== 200) {
       console.warn(`[Scraper] Failed to fetch ${url}. Status: ${response.status}`);
       if (response.status === 403 || response.status === 503) {
         throw new Error(`Access denied by ${new URL(url).hostname}. The site is blocking automated requests.`);
@@ -103,191 +104,138 @@ async function scrapeProductData(url, maxImages = 4) {
       throw new Error(`Server returned status ${response.status}`);
     }
 
-    const html = await response.text();
+    const html = response.data;
     const $ = cheerio.load(html);
 
+    // Helper to find data in JSON-LD
+    const findInJsonLd = (targetType, callback) => {
+      $('script[type="application/ld+json"]').each((i, el) => {
+        try {
+          const data = JSON.parse($(el).html());
+          const search = (item) => {
+            if (!item) return;
+            if (Array.isArray(item)) { item.forEach(search); return; }
+            if (item['@type'] === targetType || (Array.isArray(item['@type']) && item['@type'].includes(targetType))) {
+              callback(item);
+            }
+            if (item['@graph']) search(item['@graph']);
+            if (item.mainEntity) search(item.mainEntity);
+          };
+          search(data);
+        } catch (e) {}
+      });
+    };
+
     // ━━━━━━━ TITLE SCRAPING ━━━━━━━
-    // 1. JSON-LD Schema title
-    $('script[type="application/ld+json"]').each((i, el) => {
-      if (scrapedTitle) return;
-      try {
-        const data = JSON.parse($(el).html());
-        const extractTitle = (item) => {
-          if (item && item['@type'] === 'Product' && item.name) return item.name;
-          return '';
-        };
-        if (Array.isArray(data)) {
-          for (const item of data) { const t = extractTitle(item); if (t) { scrapedTitle = t; break; } }
-        } else {
-          scrapedTitle = extractTitle(data);
-          if (!scrapedTitle && data['@graph']) {
-            for (const item of data['@graph']) { const t = extractTitle(item); if (t) { scrapedTitle = t; break; } }
-          }
-        }
-      } catch (e) { }
-    });
+    // 1. Metadata (Standard across sites)
+    scrapedTitle = $('meta[property="og:title"]').attr('content') || 
+                   $('meta[name="twitter:title"]').attr('content') || 
+                   $('meta[name="title"]').attr('content') || '';
 
-    // 2. Amazon-specific title
+    // 2. JSON-LD
     if (!scrapedTitle) {
-      scrapedTitle = $('#productTitle').text().trim() || '';
+      findInJsonLd('Product', (p) => { if (!scrapedTitle && p.name) scrapedTitle = p.name; });
     }
 
-    // 3. Flipkart-specific title
+    // 3. Site-Specific Selectors
     if (!scrapedTitle) {
-      scrapedTitle = $('.B_NuCI').text().trim() || $('span.VU-ZEz').text().trim() || '';
+      scrapedTitle = $('#productTitle').text().trim() || // Amazon
+                     $('.B_NuCI').text().trim() ||      // Flipkart
+                     $('span.VU-ZEz').text().trim() || // Flipkart New
+                     $('.pdp-name').text().trim() ||    // Myntra
+                     $('h1').first().text().trim() ||   // Generic
+                     $('title').text().trim();
     }
 
-    // 4. og:title / meta title fallback
-    if (!scrapedTitle) {
-      scrapedTitle = $('meta[property="og:title"]').attr('content') || $('meta[name="title"]').attr('content') || $('title').text().trim() || '';
-    }
-
-    // 5. Last resort: first h1
-    if (!scrapedTitle) {
-      scrapedTitle = $('h1').first().text().trim() || '';
-    }
-
-    // Clean up title - remove site name prefixes and suffixes
+    // Clean up title
     scrapedTitle = scrapedTitle
       .replace(/^(Amazon\.in|Amazon|Flipkart|Myntra|Meesho|Buy Online)\s*[:|-]\s*/i, '')
       .replace(/\s*[-|:]\s*(Amazon\.in|Amazon|Flipkart|Myntra|Meesho|Buy Online).*$/i, '')
-      .replace(/\s*:\s*Buy\s+Online.*$/i, '')
-      .replace(/\s*\|\s*Free Shipping.*$/i, '')
       .trim();
 
-    console.log(`[Scraper] Title found: "${scrapedTitle}" from ${url}`);
+    console.log(`[Scraper] Title found: "${scrapedTitle}"`);
+
+    // ━━━━━━━ CATEGORY SCRAPING ━━━━━━━
+    let scrapedCategory = '';
+    // 1. Breadcrumbs
+    const breadcrumbSelectors = ['.breadcrumb', '.breadcrumbs', '._1MROuz', '.pdp-breadcrumb', '.a-breadcrumb'];
+    for (const sel of breadcrumbSelectors) {
+       const text = $(sel).text().trim();
+       if (text) {
+         const parts = text.split(/›|>|»|\//).map(s => s.trim()).filter(Boolean);
+         if (parts.length > 1) {
+           scrapedCategory = parts[parts.length - 1]; // Take the last specific category
+           if (scrapedCategory.toLowerCase() === scrapedTitle.toLowerCase().substring(0, scrapedCategory.length)) {
+             scrapedCategory = parts[parts.length - 2] || scrapedCategory;
+           }
+           break;
+         }
+       }
+    }
+    // 2. Meta tags
+    if (!scrapedCategory) {
+      scrapedCategory = $('meta[property="og:category"]').attr('content') || 
+                        $('meta[name="category"]').attr('content') || '';
+    }
+    scrapedCategory = scrapedCategory.split(/[|:-]/)[0].trim();
 
     // ━━━━━━━ PRICE SCRAPING ━━━━━━━
-
-    // 1. JSON-LD Schema price (most reliable — works on Amazon, Flipkart, Myntra, etc.)
-    $('script[type="application/ld+json"]').each((i, el) => {
+    // 1. JSON-LD Offers (Most reliable)
+    findInJsonLd('Product', (p) => {
       if (scrapedPrice > 0) return;
-      try {
-        const data = JSON.parse($(el).html());
-        const extractPrice = (item) => {
-          if (!item) return 0;
-          if (item.offers) {
-            const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
-            for (const offer of offers) {
-              const p = parseFloat(offer.price || offer.lowPrice || offer.highPrice || 0);
-              if (p > 0) return Math.round(p);
-              // Check nested offer within AggregateOffer
-              if (offer['@type'] === 'AggregateOffer') {
-                const lp = parseFloat(offer.lowPrice || offer.highPrice || 0);
-                if (lp > 0) return Math.round(lp);
-              }
-            }
-          }
-          return 0;
-        };
-        if (Array.isArray(data)) {
-          for (const item of data) {
-            if (item['@type'] === 'Product') { scrapedPrice = extractPrice(item); break; }
-          }
-        } else if (data['@type'] === 'Product') {
-          scrapedPrice = extractPrice(data);
-        } else if (data['@graph']) {
-          for (const item of data['@graph']) {
-            if (item['@type'] === 'Product') { scrapedPrice = extractPrice(item); break; }
-          }
-        }
-      } catch (e) { }
+      const offers = Array.isArray(p.offers) ? p.offers : [p.offers].filter(Boolean);
+      for (const off of offers) {
+        const pr = parseFloat(off.price || off.lowPrice || off.highPrice || 0);
+        if (pr > 0) { scrapedPrice = Math.round(pr); break; }
+      }
     });
 
-    // 2. Amazon-specific price selectors
-    if (scrapedPrice === 0) {
-      const amazonPriceSelectors = [
-        '.priceToPay .a-offscreen',
-        '#corePrice_feature_div .a-offscreen',
-        '#corePriceDisplay_desktop_feature_div .a-offscreen',
-        '.a-price .a-offscreen',
-        '#priceblock_dealprice',
-        '#priceblock_ourprice',
-        '#priceblock_saleprice',
-        '.a-price-whole',
-        '#apex_desktop .a-offscreen',
-        '#tp_price_block_total_price_ww .a-offscreen',
-      ];
-      for (const selector of amazonPriceSelectors) {
-        const text = $(selector).first().text().trim();
-        if (text) {
-          const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
-          if (match) {
-            const p = parseFloat(match[0]);
-            if (p > 0) { scrapedPrice = Math.round(p); break; }
-          }
-        }
-      }
-    }
-
-    // 3. Flipkart-specific price selectors
-    if (scrapedPrice === 0) {
-      const flipkartSelectors = [
-        '._30jeq3', '.Nx9bqj._4b5DiR', '.CEmiEU div._30jeq3',
-        '._16Jk6d', '.Nx9bqj',
-      ];
-      for (const selector of flipkartSelectors) {
-        const text = $(selector).first().text().trim();
-        if (text) {
-          const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
-          if (match) {
-            const p = parseFloat(match[0]);
-            if (p > 0) { scrapedPrice = Math.round(p); break; }
-          }
-        }
-      }
-    }
-
-    // 4. Myntra / Meesho selectors
-    if (scrapedPrice === 0) {
-      const otherSelectors = [
-        '.pdp-price strong', '.pdp-discount-container .pdp-price',
-        '[class*="ProductPrice"]', '[class*="DiscountedPrice"]',
-      ];
-      for (const selector of otherSelectors) {
-        const text = $(selector).first().text().trim();
-        if (text) {
-          const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
-          if (match) {
-            const p = parseFloat(match[0]);
-            if (p > 0) { scrapedPrice = Math.round(p); break; }
-          }
-        }
-      }
-    }
-
-    // 5. og:price / product:price meta tags
+    // 2. Meta Price
     if (scrapedPrice === 0) {
       const priceMetas = [
-        $('meta[property="og:price:amount"]').attr('content'),
-        $('meta[property="product:price:amount"]').attr('content'),
-        $('meta[name="twitter:data1"]').attr('content'),
-        $('meta[name="twitter:data2"]').attr('content'),
-        $('meta[itemprop="price"]').attr('content'),
-        $('[itemprop="price"]').attr('content'),
-        $('[itemprop="price"]').text().trim(),
+        'meta[property="og:price:amount"]', 'meta[property="product:price:amount"]',
+        'meta[name="twitter:data1"]', 'meta[itemprop="price"]', '[itemprop="price"]'
       ];
-      for (const metaPrice of priceMetas) {
-        if (!metaPrice) continue;
-        const match = metaPrice.replace(/[₹,\s]/g, '').match(/[\d.]+/);
-        if (match) {
-          const p = parseFloat(match[0]);
-          if (p > 0) { scrapedPrice = Math.round(p); break; }
+      for (const sel of priceMetas) {
+        const val = $(sel).attr('content') || $(sel).text().trim();
+        if (val) {
+          const match = val.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+          if (match) {
+            const p = parseFloat(match[0]);
+            if (p > 0) { scrapedPrice = Math.round(p); break; }
+          }
         }
       }
     }
 
-    // 4. Fuzzy price scan (look for currency patterns in entire text)
+    // 3. Site Specific Selectors
     if (scrapedPrice === 0) {
-      const text = $('body').text();
-      const match = text.match(/(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.\d{1,2})?)/);
+      const selectors = [
+        '.priceToPay .a-offscreen', '.a-price-whole', // Amazon
+        '._30jeq3', '.Nx9bqj', '._16Jk6d',           // Flipkart
+        '.pdp-price strong', '[class*="ProductPrice"]', // Generic/Meesho
+      ];
+      for (const sel of selectors) {
+        const text = $(sel).first().text().trim();
+        const match = text.replace(/[₹,\s]/g, '').match(/[\d.]+/);
+        if (match) {
+          const p = parseFloat(match[0]);
+          if (p > 10) { scrapedPrice = Math.round(p); break; }
+        }
+      }
+    }
+
+    // 4. Fallback search for currency symbols
+    if (scrapedPrice === 0) {
+      const bodyText = $('body').text();
+      const match = bodyText.match(/(?:₹|Rs\.?|INR)\s*([0-9,]+(?:\.\d{1,2})?)/);
       if (match) {
         const p = parseFloat(match[1].replace(/,/g, ''));
         if (p > 10 && p < 1000000) scrapedPrice = Math.round(p);
       }
     }
 
-    console.log(`[Scraper] Price found: ₹${scrapedPrice} from ${url}`);
+    console.log(`[Scraper] Price found: ₹${scrapedPrice}`);
 
     // ━━━━━━━ IMAGE SCRAPING ━━━━━━━
 
@@ -349,148 +297,81 @@ async function scrapeProductData(url, maxImages = 4) {
       } catch (e) { }
     });
 
-    // 2. Amazon: data-a-dynamic-image (main image with all variants)
-    if (images.length < maxImages) {
-      const dynamicImageEl = $('[data-a-dynamic-image]').first();
-      if (dynamicImageEl.length) {
-        try {
-          const imgData = JSON.parse(dynamicImageEl.attr('data-a-dynamic-image'));
-          // Take all URLs from the dynamic image data
-          const urls = Object.keys(imgData);
-          urls.forEach(u => addImage(u));
-        } catch (e) { }
-      }
+    // ━━━━━━━ IMAGE SCRAPING ━━━━━━━
+    // 1. JSON-LD Images (Highest quality)
+    findInJsonLd('Product', (p) => {
+      const imgs = Array.isArray(p.image) ? p.image : [p.image].filter(Boolean);
+      imgs.forEach(img => {
+        const src = typeof img === 'string' ? img : img.url;
+        if (src) addImage(src);
+      });
+    });
+
+    // 2. Amazon: data-a-dynamic-image & high-res upgrade
+    const dynamicImageEl = $('[data-a-dynamic-image]').first();
+    if (dynamicImageEl.length) {
+      try {
+        const imgData = JSON.parse(dynamicImageEl.attr('data-a-dynamic-image'));
+        Object.keys(imgData).forEach(addImage);
+      } catch (e) {}
     }
 
-    // 3. Amazon: altImages / thumbnail strip (gets multiple product angles)
-    if (images.length < maxImages) {
-      $('#altImages img, #imageBlock img, .imageThumbnail img, li.image img, .maintain-height img').each((i, el) => {
+    // 3. Pinterest/Social Share images (usually good quality)
+    const socialImage = $('meta[property="og:image"]').attr('content') || 
+                        $('meta[name="twitter:image"]').attr('content') || 
+                        $('link[rel="image_src"]').attr('href');
+    if (socialImage) addImage(socialImage);
+
+    // 4. Primary Image/Gallery Selectors
+    const gallerySelectors = [
+      '#altImages img', '#imageBlock img', '.imageThumbnail img', // Amazon
+      '._2E1FGS img', '._3kidJX img', '.CXW8mj img', '._2r_T1I img', // Flipkart
+      '.pdp-image img', '.pdp-gallery-container img',            // Myntra
+      '[class*="ProductImage"]', '[class*="GalleryImage"]',       // Generic/Meesho
+      '.slick-slide img', '.swiper-slide img', '.owl-item img'    // Carousels
+    ];
+    
+    gallerySelectors.forEach(sel => {
+      $(sel).each((i, el) => {
         if (images.length >= maxImages) return;
         let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-old-hires') || '';
-        if (!src) return;
-        // Convert Amazon thumbnails/placeholders to high-res
+        if (!src || src.startsWith('data:')) return;
+        
+        // Upgrade thumbnails to High-Res where possible
+        // Amazon: 
         src = src.replace(/\._[A-Z]{2}\d+_\./, '.');
-        src = src.replace(/\._S[A-Z]\d+_\./, '.');
         src = src.replace(/\._AC_[A-Z]{2}\d+_\./, '.');
-        addImage(src);
-      });
-    }
-
-    // 4. Flipkart: product image gallery
-    if (images.length < maxImages) {
-      // Flipkart thumbnail strip and main image containers
-      $('._2E1FGS img, ._3kidJX img, .CXW8mj img, ._1BweB8 img, ._2r_T1I img, ._396cs4 img, .q6DClP img, ._2AmZ0f img, [src*="static/v1/"] img').each((i, el) => {
-        if (images.length >= maxImages) return;
-        let src = $(el).attr('src') || $(el).attr('data-src') || '';
-        if (!src) return;
-        // Flipkart: upgrade thumbnail to full-size (128 -> 832 or 416)
+        // Flipkart: 
         src = src.replace(/\/128\/128\//g, '/832/832/');
-        src = src.replace(/\/image\/128\//g, '/image/832/');
-        src = src.replace(/\/image\/416\//g, '/image/832/');
+        src = src.replace(/\/image\/\d+\/\d+\//g, '/image/832/832/');
+        
         addImage(src);
       });
-    }
+    });
 
-    // 5. Generic Gallery / Carousel Selectors (Slick, Swiper, Owl, etc.)
-    if (images.length < maxImages) {
-      const gallerySelectors = [
-        '.slick-slide img', '.swiper-slide img', '.owl-item img', 
-        '.gallery-item img', '.product-gallery img', '.pdp-gallery img',
-        '.main-image-wrapper img', '.zoomContainer img', '.img-zoom img'
-      ];
-      gallerySelectors.forEach(sel => {
-        $(sel).each((i, el) => {
-          if (images.length >= maxImages) return;
-          const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-high-res') || '';
-          if (src) addImage(src);
-        });
-      });
-    }
-
-    // 6. Open Graph + Twitter + itemprop meta images
-    if (images.length < maxImages) {
-      const metaImgSelectors = [
-        'meta[property="og:image"]', 'meta[property="og:image:secure_url"]',
-        'meta[name="twitter:image"]', 'meta[name="twitter:image:src"]',
-        'meta[itemprop="image"]',
-      ];
-      metaImgSelectors.forEach(sel => {
-        const content = $(sel).attr('content');
-        if (content) addImage(content);
-      });
-    }
-
-    // 7. Generic product containers (Fuzzy)
-    if (images.length < maxImages) {
-      const productContainers = [
-        '#imgTagWrapperId', '.product-image', '.gallery-image', '.product-gallery',
-        '.main-image', '[data-gallery]', '.slick-track', '.swiper-wrapper',
-        '.woocommerce-product-gallery__image', '.product-main-image',
-        '.pdp-image', '.product-detail-image', '[class*="ProductImage"]',
-        '.image-grid', '.product-photos',
-      ];
-      productContainers.forEach(container => {
-        $(container).find('img').each((i, el) => {
-          if (images.length >= maxImages) return;
-          let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-zoom-image') || '';
-          if (!src) return;
-          src = src.replace(/\._[A-Z]{2}\d+_\./, '.'); // Amazon hi-res fix
-          const alt = ($(el).attr('alt') || '').toLowerCase();
-          const pClass = ($(el).attr('class') || '').toLowerCase();
-          // Exclude icons but include anything marked as gallery/product/angle
-          if (!alt.includes('logo') && !alt.includes('icon')) {
-             addImage(src);
-          }
-        });
-      });
-    }
-
-    // 8. Fallback for Search Result Pages / Category Pages
+    // 5. Fallback for Category/Search listings
     if (images.length === 0) {
-      const searchSelectors = [
-        '.s-image', '[data-component-type="s-product-image"] img', // Amazon
-        '._2r_T1I img', '._396cs4 img', '._2AmZ0f img', // Flipkart
-        '.product-item-photo img', '.product-image-photo', // Magento/Generic
-        '.item-img img', '.product-card-img img' // Generic
-      ];
-      searchSelectors.forEach(sel => {
-        $(sel).each((i, el) => {
-          if (images.length >= (maxImages > 4 ? 4 : maxImages)) return; // Don't overwhelm with search thumbs, but take multiple
-          let src = $(el).attr('src') || $(el).attr('data-src') || '';
-          if (src) {
-             // Try to upgrade search thumb to high-res
-             src = src.replace(/\._AC_[A-Z]{2}\d+_\./, '.');
-             src = src.replace(/\._[A-Z]{2}\d+_\./, '.');
-             src = src.replace(/\/128\/128\//g, '/832/832/');
-             addImage(src);
-          }
-        });
+      $('.s-image, ._1AtVbE img, .product-item img').each((i, el) => {
+        if (images.length >= (maxImages > 4 ? 4 : maxImages)) return;
+        const src = $(el).attr('src') || $(el).attr('data-src') || '';
+        if (src) addImage(src);
       });
     }
 
-    // 9. Final Fallback exact IDs & fuzzy scan
-    if (images.length === 0) {
-      const fallbackIds = ['#landingImage', '#imgBlkFront', '#main-image', '.product-image img', '#main-img'];
-      for (const sel of fallbackIds) {
-        const src = $(sel).attr('src') || $(sel).attr('data-src') || '';
-        if (addImage(src)) break;
-      }
-    }
-    
-    // 10. Last ditch: grab the absolute first image that looks like a product
+    // 6. Last Ditch: Absolute first large-ish image
     if (images.length === 0) {
       $('img').each((i, el) => {
         if (images.length >= 1) return;
         const src = $(el).attr('src') || $(el).attr('data-src') || '';
-        const width = parseInt($(el).attr('width') || '0');
-        const height = parseInt($(el).attr('height') || '0');
-        const isProduct = (src.includes('product') || src.includes('item') || src.includes('media')) && !isLikelyBrandImage(src);
-        
-        if (isProduct || (width > 150 && height > 150)) {
+        const w = parseInt($(el).attr('width') || '0');
+        const h = parseInt($(el).attr('height') || '0');
+        if (src && !isLikelyBrandImage(src) && (w > 200 || h > 200 || src.includes('product'))) {
           addImage(src);
         }
       });
     }
+
+    console.log(`[Scraper] Images found: ${images.length}`);
 
   } catch (err) {
     if (err.name === 'AbortError') {
@@ -498,9 +379,15 @@ async function scrapeProductData(url, maxImages = 4) {
       throw new Error('Request timed out. The site is taking too long to respond.');
     }
     console.error(`[Scraper] Error scraping ${url}:`, err.message);
-    throw err; // Re-throw to handle in route
+    throw err;
   }
-  return { images: images.slice(0, maxImages), price: scrapedPrice, title: scrapedTitle };
+  
+  return { 
+    images: images.slice(0, maxImages), 
+    price: scrapedPrice, 
+    title: scrapedTitle,
+    category: scrapedCategory 
+  };
 }
 
 // ─── Constants: Known Brands for Auto-detection ───
@@ -788,7 +675,7 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
     const catResult = await db.query('SELECT name FROM categories ORDER BY name ASC');
     const existingCategories = catResult.rows.map(r => r.name);
     
-    const suggestedCategory = autoCategorizeName(scraped.title, existingCategories);
+    const suggestedCategory = scraped.category || autoCategorizeName(scraped.title, existingCategories);
     const detectedBrand = detectBrand(scraped.title);
 
     console.log(`[Scrape Link] ✅ Title: "${scraped.title}" | Price: ₹${scraped.price} | Category: ${suggestedCategory} | Brand: ${detectedBrand} | Images: ${s3ImageUrls.length}`);
