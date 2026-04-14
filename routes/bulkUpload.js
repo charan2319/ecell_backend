@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const cheerio = require('cheerio');
+const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const db = require('../models/db');
@@ -143,6 +144,8 @@ async function scrapeProductData(url, maxImages = 4) {
                      $('.B_NuCI').text().trim() ||      // Flipkart
                      $('span.VU-ZEz').text().trim() || // Flipkart New
                      $('.pdp-name').text().trim() ||    // Myntra
+                     $('.pdp-title').text().trim() ||   // Myntra Brand/Title
+                     $('h1[class*="Text"]').first().text().trim() || // Meesho/Generic
                      $('h1').first().text().trim() ||   // Generic
                      $('title').text().trim();
     }
@@ -213,7 +216,8 @@ async function scrapeProductData(url, maxImages = 4) {
       const selectors = [
         '.priceToPay .a-offscreen', '.a-price-whole', // Amazon
         '._30jeq3', '.Nx9bqj', '._16Jk6d',           // Flipkart
-        '.pdp-price strong', '[class*="ProductPrice"]', // Generic/Meesho
+        '.pdp-price strong', '.pdp-discount-container .pdp-price', // Myntra
+        'h3[class*="Price-"]', '[class*="ProductPrice"]', // Meesho/Generic
       ];
       for (const sel of selectors) {
         const text = $(sel).first().text().trim();
@@ -326,8 +330,8 @@ async function scrapeProductData(url, maxImages = 4) {
     const gallerySelectors = [
       '#altImages img', '#imageBlock img', '.imageThumbnail img', // Amazon
       '._2E1FGS img', '._3kidJX img', '.CXW8mj img', '._2r_T1I img', // Flipkart
-      '.pdp-image img', '.pdp-gallery-container img',            // Myntra
-      '[class*="ProductImage"]', '[class*="GalleryImage"]',       // Generic/Meesho
+      '.pdp-image img', '.pdp-gallery-container img', '.pdp-flex img', // Myntra
+      '[class*="ProductImage"]', '[class*="GalleryImage"]', '[class*="ShopByProductCard"] img', // Generic/Meesho
       '.slick-slide img', '.swiper-slide img', '.owl-item img'    // Carousels
     ];
     
@@ -472,16 +476,17 @@ function autoCategorizeName(productName, existingCategories = []) {
 // ─── Helper: Download image from URL and return buffer ───
 async function downloadImage(url) {
   try {
-    const response = await fetch(url, {
+    const response = await axios.get(url, {
+      responseType: 'arraybuffer',
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+        'Referer': 'https://www.google.com/',
+      },
+      timeout: 10000
     });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    return Buffer.from(response.data);
   } catch (err) {
-    console.error(`Failed to download image: ${url}`, err.message);
+    console.error(`[Scraper] Failed to download image ${url}:`, err.message);
     return null;
   }
 }
