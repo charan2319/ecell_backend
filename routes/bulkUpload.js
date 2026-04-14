@@ -598,7 +598,7 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         // Scrape images AND price from the product link
         let imageUrls = [];
         let scrapedPriceFromLink = 0;
-        if (link && link.trim()) {
+        if (link && link.trim() && (link.trim().startsWith('http://') || link.trim().startsWith('https://'))) {
           console.log(`[Bulk Upload] Scraping data for: ${productName} from ${link}`);
           const scraped = await scrapeProductData(link.trim());
           scrapedPriceFromLink = scraped.price || 0;

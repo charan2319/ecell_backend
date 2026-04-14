@@ -200,38 +200,6 @@ router.delete('/images/:imgId', verifyToken, isAdmin, async (req, res) => {
     }
 });
 
-router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
-    const client = await db.pool.connect();
-    try {
-        await client.query('BEGIN');
-        
-        // 1. Snapshot product details into order_items before deletion
-        //    (for any order items that haven't been snapshotted yet)
-        await client.query(`
-            UPDATE order_items oi
-            SET product_name = p.name, product_image = p.image_url
-            FROM products p
-            WHERE oi.product_id = p.id AND oi.product_id = $1
-        `, [req.params.id]);
-        
-        // 2. Delete any extra product images
-        await client.query('DELETE FROM product_images WHERE product_id = $1', [req.params.id]);
-        
-        // 3. Delete the product itself
-        //    (order_items.product_id will be SET NULL automatically via FK constraint)
-        await client.query('DELETE FROM products WHERE id = $1', [req.params.id]);
-        
-        await client.query('COMMIT');
-        res.json({ message: 'Product deleted successfully' });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error('Error deleting product:', err);
-        res.status(500).json({ message: 'Server error deleting product: ' + err.message });
-    } finally {
-        client.release();
-    }
-});
-
 // ─── Clear All Products ───
 router.delete('/clear-all/confirm', verifyToken, isAdmin, async (req, res) => {
     const client = await db.pool.connect();
@@ -260,6 +228,38 @@ router.delete('/clear-all/confirm', verifyToken, isAdmin, async (req, res) => {
         await client.query('ROLLBACK');
         console.error('Error clearing all products:', err);
         res.status(500).json({ message: 'Server error clearing products: ' + err.message });
+    } finally {
+        client.release();
+    }
+});
+
+router.delete('/:id', verifyToken, isAdmin, async (req, res) => {
+    const client = await db.pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        // 1. Snapshot product details into order_items before deletion
+        //    (for any order items that haven't been snapshotted yet)
+        await client.query(`
+            UPDATE order_items oi
+            SET product_name = p.name, product_image = p.image_url
+            FROM products p
+            WHERE oi.product_id = p.id AND oi.product_id = $1
+        `, [req.params.id]);
+        
+        // 2. Delete any extra product images
+        await client.query('DELETE FROM product_images WHERE product_id = $1', [req.params.id]);
+        
+        // 3. Delete the product itself
+        //    (order_items.product_id will be SET NULL automatically via FK constraint)
+        await client.query('DELETE FROM products WHERE id = $1', [req.params.id]);
+        
+        await client.query('COMMIT');
+        res.json({ message: 'Product deleted successfully' });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Error deleting product:', err);
+        res.status(500).json({ message: 'Server error deleting product: ' + err.message });
     } finally {
         client.release();
     }
