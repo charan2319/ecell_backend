@@ -756,7 +756,7 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
     for (let j = 0; j < scraped.images.length; j++) {
       try {
         const imgBuffer = await downloadImage(scraped.images[j]);
-        if (imgBuffer && imgBuffer.length > 5000) {
+        if (imgBuffer && imgBuffer.length > 2000) {
           const ext = scraped.images[j].match(/\.(jpg|jpeg|png|webp|gif)/i)?.[1] || 'jpg';
           const filename = `${uuidv4()}.${ext}`;
           const s3Url = await uploadBufferToS3(imgBuffer, `image/${ext}`, filename);
