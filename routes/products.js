@@ -4,6 +4,19 @@ const upload = require('../utils/upload');
 const router = express.Router();
 const { verifyToken, isAdmin } = require('../middleware/auth');
 
+// Ensure products table has all necessary columns
+const ensureProductsColumns = async () => {
+    try {
+        await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS original_price INTEGER');
+        await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_location TEXT DEFAULT \'Alliance University\'');
+        await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_time TEXT DEFAULT \'7 Days\'');
+        await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS brand TEXT');
+        await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS is_new_arrival BOOLEAN DEFAULT FALSE');
+    } catch (err) {
+        console.error('Migration error (ensureProductsColumns):', err);
+    }
+};
+
 // Ensure categories table exists and is populated from products
 const ensureCategoriesTable = async () => {
     await db.query(`
@@ -33,6 +46,7 @@ const ensureProductImagesTable = async () => {
 
 router.get('/', async (req, res) => {
     try {
+        await ensureProductsColumns();
         const result = await db.query('SELECT * FROM products ORDER BY id ASC');
         await ensureProductImagesTable();
         const imgResult = await db.query('SELECT * FROM product_images');
@@ -134,6 +148,7 @@ router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) 
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
+        await ensureProductsColumns();
         await ensureCategoriesTable();
         const safeCat = category || 'Uncategorized';
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
@@ -164,6 +179,7 @@ router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
+        await ensureProductsColumns();
         await ensureCategoriesTable();
         const safeCat = category || 'Uncategorized';
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
