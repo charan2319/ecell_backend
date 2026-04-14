@@ -437,6 +437,85 @@ async function scrapeProductData(url, maxImages = 4) {
   return { images: images.slice(0, maxImages), price: scrapedPrice, title: scrapedTitle };
 }
 
+// ─── Constants: Known Brands for Auto-detection ───
+const KNOWN_BRANDS_LIST = [
+  'boAt', 'Boult', 'Noise', 'Zebronics', 'JBL', 'Sony', 'Samsung', 'Apple', 'Xiaomi', 'Mi',
+  'Realme', 'OnePlus', 'Oppo', 'Vivo', 'Motorola', 'Nokia', 'LG', 'Philips', 'Panasonic',
+  'HP', 'Dell', 'Lenovo', 'Asus', 'Acer', 'MSI', 'Logitech', 'Corsair', 'Razer',
+  'Marshall', 'Bose', 'Sennheiser', 'Skullcandy', 'pTron', 'Mivi', 'Portronics',
+  'Ambrane', 'Syska', 'Havells', 'Bajaj', 'Crompton',
+  'Nike', 'Adidas', 'Puma', 'Reebok', 'Fila', 'Skechers', 'Woodland', 'Bata',
+  'Fastrack', 'Titan', 'Casio', 'Timex', 'Fossil', 'Fire-Boltt',
+  'Cello', 'Classmate', 'Doms', 'Camlin', 'Natraj',
+  'Prestige', 'Pigeon', 'Hawkins', 'Butterfly',
+  'Wildcraft', 'American Tourister', 'Safari', 'Skybags',
+  'HUION', 'Wacom', 'Anker', 'Belkin', 'Ugreen',
+  'Redgear', 'Cosmic Byte', 'Ant Esports', 'Wings', 'Hammer', 'CrossBeats',
+  'Maono', 'Fifine', 'Kingston', 'SanDisk', 'Seagate', 'WD', 'Toshiba',
+  'Canon', 'Nikon', 'GoPro', 'DJI', 'Fujifilm',
+];
+
+// ─── Helper: Detect Brand from Product Name ───
+function detectBrand(productName) {
+  if (!productName) return '';
+  const lowerName = productName.toLowerCase();
+  return KNOWN_BRANDS_LIST.find(b => lowerName.includes(b.toLowerCase())) || '';
+}
+
+// ─── Helper: Auto-categorize product name ───
+function autoCategorizeName(productName, existingCategories = []) {
+  if (!productName) return 'General';
+  const nameLower = productName.toLowerCase();
+
+  // ── Known brand names that should NEVER be used as categories ──
+  const knownBrandsSet = new Set(KNOWN_BRANDS_LIST.map(b => b.toLowerCase()));
+
+  // Check if a word/phrase is a known brand
+  const isBrand = (text) => knownBrandsSet.has(text.toLowerCase().trim());
+
+  // Keywords mapped to common e-commerce categories
+  const categoryKeywords = {
+    'Electronics': ['headphone', 'earphone', 'earbuds', 'speaker', 'bluetooth', 'wireless', 'charger', 'adapter', 'cable', 'usb', 'power bank', 'battery', 'led', 'light', 'lamp', 'fan', 'electronic', 'gadget', 'smartwatch', 'smart watch', 'watch', 'clock', 'timer', 'sensor', 'remote', 'neckband', 'tws', 'soundbar', 'microphone', 'webcam', 'mouse', 'keyboard'],
+    'Laptops': ['laptop', 'notebook', 'macbook', 'chromebook', 'victus', 'loq', 'tuf', 'rog', 'predator', 'inspiron', 'vostro', 'thinkpad', 'ideapad'],
+    'Tablets': ['tablet', 'ipad', 'tab'],
+    'Phones': ['phone', 'mobile', 'smartphone', 'iphone', 'pixel', 'galaxy', 'redmi', 'poco', 'nord'],
+    'Stationery': ['pen', 'pencil', 'notebook', 'diary', 'planner', 'marker', 'highlighter', 'eraser', 'sharpener', 'stapler', 'tape', 'glue', 'scissors', 'ruler', 'compass', 'stationery', 'sticky notes', 'paper'],
+    'Books': ['book', 'novel', 'textbook', 'guide', 'manual', 'edition', 'paperback', 'hardcover'],
+    'Clothing': ['shirt', 'tshirt', 't-shirt', 'hoodie', 'jacket', 'sweater', 'jeans', 'pants', 'trouser', 'shorts', 'dress', 'skirt', 'clothing', 'apparel', 'wear', 'cap', 'hat', 'socks'],
+    'Footwear': ['shoe', 'sneaker', 'sandal', 'slipper', 'boot', 'footwear', 'flip flop', 'crocs'],
+    'Bags': ['bag', 'backpack', 'handbag', 'luggage', 'suitcase', 'pouch', 'wallet', 'purse', 'tote'],
+    'Accessories': ['keychain', 'ring', 'bracelet', 'necklace', 'chain', 'sunglasses', 'glasses', 'belt', 'accessory', 'accessories', 'ornament'],
+    'Food & Beverages': ['chocolate', 'snack', 'chips', 'biscuit', 'cookie', 'candy', 'drink', 'bottle', 'mug', 'cup', 'flask', 'coffee', 'tea', 'food'],
+    'Home & Living': ['pillow', 'cushion', 'blanket', 'bedsheet', 'towel', 'mat', 'rug', 'candle', 'frame', 'photo', 'vase', 'decor', 'decoration', 'home', 'living', 'curtain', 'mirror'],
+    'Sports': ['ball', 'bat', 'racket', 'gym', 'fitness', 'yoga', 'sport', 'exercise', 'dumbbell', 'skipping', 'cycling'],
+    'Gaming': ['game', 'gaming', 'controller', 'console', 'playstation', 'xbox', 'nintendo', 'joystick', 'mouse pad', 'mousepad'],
+    'Beauty & Personal Care': ['perfume', 'deodorant', 'cream', 'lotion', 'shampoo', 'soap', 'face wash', 'moisturizer', 'sunscreen', 'grooming', 'trimmer', 'razor', 'beauty', 'skincare', 'makeup'],
+    'Toys & Games': ['toy', 'puzzle', 'board game', 'rubik', 'fidget', 'spinner', 'lego', 'doll', 'action figure'],
+    'Daily Use': ['drawing tablet', 'tablet stand', 'desk', 'organizer', 'storage', 'holder', 'stand', 'mount', 'case', 'cover', 'protector']
+  };
+
+  // First, try keyword matching
+  for (const [category, keywords] of Object.entries(categoryKeywords)) {
+    for (const keyword of keywords) {
+      if (nameLower.includes(keyword)) {
+        const existingMatch = existingCategories.find(c => c.toLowerCase() === category.toLowerCase());
+        return existingMatch || category;
+      }
+    }
+  }
+
+  // Then try to match against existing categories, but SKIP brand-named categories
+  for (const cat of existingCategories) {
+    if (isBrand(cat)) continue;
+    const catLower = cat.toLowerCase();
+    if (nameLower.includes(catLower) || catLower.split(' ').some(word => word.length > 3 && nameLower.includes(word))) {
+      return cat;
+    }
+  }
+
+  return 'General';
+}
+
 // ─── Helper: Download image from URL and return buffer ───
 async function downloadImage(url) {
   try {
@@ -454,89 +533,6 @@ async function downloadImage(url) {
   }
 }
 
-// ─── Helper: Auto-categorize product name ───
-function autoCategorizeName(productName, existingCategories) {
-  const nameLower = productName.toLowerCase();
-
-  // ── Known brand names that should NEVER be used as categories ──
-  const knownBrands = new Set([
-    'boat', 'boult', 'noise', 'zebronics', 'jbl', 'sony', 'samsung', 'apple', 'xiaomi', 'mi',
-    'realme', 'oneplus', 'oppo', 'vivo', 'motorola', 'nokia', 'lg', 'philips', 'panasonic',
-    'hp', 'dell', 'lenovo', 'asus', 'acer', 'msi', 'gigabyte', 'intel', 'amd',
-    'logitech', 'corsair', 'razer', 'steelseries', 'hyperx', 'cooler master',
-    'marshall', 'bose', 'sennheiser', 'skullcandy', 'ptron', 'mivi', 'portronics',
-    'ambrane', 'syska', 'havells', 'bajaj', 'crompton', 'orient', 'usha',
-    'nike', 'adidas', 'puma', 'reebok', 'fila', 'skechers', 'woodland', 'bata',
-    'fastrack', 'titan', 'casio', 'timex', 'fossil', 'fire-boltt', 'fireboltt',
-    'amazon', 'flipkart', 'meesho', 'myntra',
-    'cello', 'classmate', 'faber castell', 'doms', 'camlin', 'natraj',
-    'prestige', 'pigeon', 'hawkins', 'butterfly', 'preethi', 'morphy richards',
-    'wildcraft', 'american tourister', 'safari', 'skybags', 'aristocrat',
-    'lakme', 'maybelline', 'nivea', 'dove', 'garnier', 'pond', 'himalaya',
-    'cadbury', 'nestle', 'parle', 'britannia', 'haldiram', 'amul',
-    'huion', 'wacom', 'anker', 'belkin', 'ugreen', 'amazonbasics',
-    'redgear', 'cosmic byte', 'ant esports', 'wings', 'hammer', 'crossbeats',
-    'colorfit', 'dizo', 'nothing', 'google', 'microsoft', 'creative',
-    'maono', 'fifine', 'blue', 'hyperx', 'kingston', 'sandisk', 'seagate', 'wd', 'toshiba',
-    'bosch', 'makita', 'dewalt', 'stanley', 'black decker',
-    'fujifilm', 'canon', 'nikon', 'gopro', 'dji',
-    'victus', 'loq', 'tuf', 'rog', 'predator', 'inspiron', 'vostro', 'thinkpad', 'ideapad',
-    'iphone', 'pixel', 'galaxy', 'redmi', 'poco', 'nord',
-  ]);
-
-  // Check if a word/phrase is a known brand
-  const isBrand = (text) => knownBrands.has(text.toLowerCase().trim());
-
-  // Keywords mapped to common e-commerce categories
-  const categoryKeywords = {
-    'Electronics': ['headphone', 'earphone', 'earbuds', 'speaker', 'bluetooth', 'wireless', 'charger', 'adapter', 'cable', 'usb', 'power bank', 'battery', 'led', 'light', 'lamp', 'fan', 'electronic', 'gadget', 'smartwatch', 'smart watch', 'watch', 'clock', 'timer', 'sensor', 'remote', 'neckband', 'tws', 'soundbar', 'microphone', 'webcam', 'mouse', 'keyboard'],
-    'Laptops': ['laptop', 'notebook', 'macbook', 'chromebook'],
-    'Tablets': ['tablet', 'ipad', 'tab'],
-    'Phones': ['phone', 'mobile', 'smartphone'],
-    'Stationery': ['pen', 'pencil', 'notebook', 'diary', 'planner', 'marker', 'highlighter', 'eraser', 'sharpener', 'stapler', 'tape', 'glue', 'scissors', 'ruler', 'compass', 'stationery', 'sticky notes', 'paper'],
-    'Books': ['book', 'novel', 'textbook', 'guide', 'manual', 'edition', 'paperback', 'hardcover'],
-    'Clothing': ['shirt', 'tshirt', 't-shirt', 'hoodie', 'jacket', 'sweater', 'jeans', 'pants', 'trouser', 'shorts', 'dress', 'skirt', 'clothing', 'apparel', 'wear', 'cap', 'hat', 'socks'],
-    'Footwear': ['shoe', 'sneaker', 'sandal', 'slipper', 'boot', 'footwear', 'flip flop', 'crocs'],
-    'Bags': ['bag', 'backpack', 'handbag', 'luggage', 'suitcase', 'pouch', 'wallet', 'purse', 'tote'],
-    'Accessories': ['keychain', 'ring', 'bracelet', 'necklace', 'chain', 'sunglasses', 'glasses', 'belt', 'accessory', 'accessories', 'ornament'],
-    'Food & Beverages': ['chocolate', 'snack', 'chips', 'biscuit', 'cookie', 'candy', 'drink', 'bottle', 'mug', 'cup', 'flask', 'coffee', 'tea', 'food'],
-    'Home & Living': ['pillow', 'cushion', 'blanket', 'bedsheet', 'towel', 'mat', 'rug', 'candle', 'frame', 'photo', 'vase', 'decor', 'decoration', 'home', 'living', 'curtain', 'mirror'],
-    'Sports': ['ball', 'bat', 'racket', 'gym', 'fitness', 'yoga', 'sport', 'exercise', 'dumbbell', 'skipping', 'cycling'],
-    'Gaming': ['game', 'gaming', 'controller', 'console', 'playstation', 'xbox', 'nintendo', 'joystick', 'mouse pad', 'mousepad'],
-    'Beauty & Personal Care': ['perfume', 'deodorant', 'cream', 'lotion', 'shampoo', 'soap', 'face wash', 'moisturizer', 'sunscreen', 'grooming', 'trimmer', 'razor', 'beauty', 'skincare', 'makeup'],
-    'Toys & Games': ['toy', 'puzzle', 'board game', 'rubik', 'fidget', 'spinner', 'lego', 'doll', 'action figure'],
-    'Daily Use': ['drawing tablet', 'tablet stand', 'desk', 'organizer', 'storage', 'holder', 'stand', 'mount', 'case', 'cover', 'protector']
-  };
-
-  // First, try keyword matching (most reliable — skip brand-matching with existing categories)
-  for (const [category, keywords] of Object.entries(categoryKeywords)) {
-    for (const keyword of keywords) {
-      if (nameLower.includes(keyword)) {
-        // Check if this category already exists (case-insensitive)
-        const existingMatch = existingCategories.find(c => c.toLowerCase() === category.toLowerCase());
-        return existingMatch || category;
-      }
-    }
-  }
-
-  // Then try to match against existing categories, but SKIP brand-named categories
-  for (const cat of existingCategories) {
-    if (isBrand(cat)) continue; // Skip categories that are brand names
-    const catLower = cat.toLowerCase();
-    if (nameLower.includes(catLower) || catLower.split(' ').some(word => word.length > 3 && nameLower.includes(word))) {
-      return cat;
-    }
-  }
-
-  // Fallback: Use the first non-brand significant word as a category
-  const words = productName.split(/[\s\-_()]+/).filter(w => w.length > 3 && !isBrand(w));
-  // Skip common noise words
-  const noiseWords = new Set(['with', 'from', 'this', 'that', 'pack', 'combo', 'edition', 'series', 'version', 'model', 'inch', 'type', 'style', 'best', 'premium', 'ultra', 'super', 'mega', 'mini', 'lite', 'plus', 'pro']);
-  const meaningful = words.filter(w => !noiseWords.has(w.toLowerCase()));
-
-  // Don't create a new category from random words — use 'General' instead
-  return 'General';
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // POST /api/products/bulk-upload
@@ -593,23 +589,7 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         const category = autoCategorizeName(productName, existingCategories);
 
         // Auto-detect brand from product name
-        const knownBrandsList = [
-          'boAt', 'Boult', 'Noise', 'Zebronics', 'JBL', 'Sony', 'Samsung', 'Apple', 'Xiaomi', 'Mi',
-          'Realme', 'OnePlus', 'Oppo', 'Vivo', 'Motorola', 'Nokia', 'LG', 'Philips', 'Panasonic',
-          'HP', 'Dell', 'Lenovo', 'Asus', 'Acer', 'MSI', 'Logitech', 'Corsair', 'Razer',
-          'Marshall', 'Bose', 'Sennheiser', 'Skullcandy', 'pTron', 'Mivi', 'Portronics',
-          'Ambrane', 'Syska', 'Havells', 'Bajaj', 'Crompton',
-          'Nike', 'Adidas', 'Puma', 'Reebok', 'Fila', 'Skechers', 'Woodland', 'Bata',
-          'Fastrack', 'Titan', 'Casio', 'Timex', 'Fossil', 'Fire-Boltt',
-          'Cello', 'Classmate', 'Doms', 'Camlin', 'Natraj',
-          'Prestige', 'Pigeon', 'Hawkins', 'Butterfly',
-          'Wildcraft', 'American Tourister', 'Safari', 'Skybags',
-          'HUION', 'Wacom', 'Anker', 'Belkin', 'Ugreen',
-          'Redgear', 'Cosmic Byte', 'Ant Esports', 'Wings', 'Hammer', 'CrossBeats',
-          'Maono', 'Fifine', 'Kingston', 'SanDisk', 'Seagate', 'WD', 'Toshiba',
-          'Canon', 'Nikon', 'GoPro', 'DJI', 'Fujifilm',
-        ];
-        const detectedBrand = knownBrandsList.find(b => productName.toLowerCase().includes(b.toLowerCase())) || '';
+        const detectedBrand = detectBrand(productName);
 
         // Create category if it doesn't exist
         if (!existingCategories.includes(category)) {
@@ -734,11 +714,20 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
       }
     }
 
-    console.log(`[Scrape Link] ✅ Title: "${scraped.title}" | Price: ₹${scraped.price} | Images: ${s3ImageUrls.length}`);
+    // Auto-detect category and brand
+    const catResult = await db.query('SELECT name FROM categories ORDER BY name ASC');
+    const existingCategories = catResult.rows.map(r => r.name);
+    
+    const suggestedCategory = autoCategorizeName(scraped.title, existingCategories);
+    const detectedBrand = detectBrand(scraped.title);
+
+    console.log(`[Scrape Link] ✅ Title: "${scraped.title}" | Price: ₹${scraped.price} | Category: ${suggestedCategory} | Brand: ${detectedBrand} | Images: ${s3ImageUrls.length}`);
 
     res.json({
       title: scraped.title || '',
       price: scraped.price || 0,
+       category: suggestedCategory,
+      brand: detectedBrand,
       originalImages: scraped.images,
       imageUrls: s3ImageUrls,
     });

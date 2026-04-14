@@ -107,7 +107,13 @@ router.get('/:id', async (req, res) => {
 router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
         const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time } = req.body;
-        const imageUrl = req.file ? req.file.location : '';
+        let imageUrl = req.file ? req.file.location : '';
+        
+        // Support submitting a URL directly (from scrape-link feature)
+        if (!imageUrl && req.body.image_url) {
+            imageUrl = req.body.image_url;
+        }
+
         if (!name || price_vc == null) {
             return res.status(400).json({ message: 'Name and price_vc are required' });
         }
