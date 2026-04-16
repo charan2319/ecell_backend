@@ -1,0 +1,13 @@
+node_modules/
+.env
+scratch/
+.DS_Store
+*.log
+dist/
+build/
+coverage/
+.npm
+.eslintcache
+.stylelintcache
+.vscode/
+.idea/
