@@ -12,6 +12,7 @@ const ensureProductsColumns = async () => {
         await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_time TEXT DEFAULT \'7 Days\'');
         await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS brand TEXT');
         await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS is_new_arrival BOOLEAN DEFAULT FALSE');
+        await db.query('ALTER TABLE products ADD COLUMN IF NOT EXISTS specifications JSONB');
     } catch (err) {
         console.error('Migration error (ensureProductsColumns):', err);
     }
@@ -137,7 +138,7 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
-        const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time } = req.body;
+        const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time, specifications } = req.body;
         let imageUrl = req.file ? req.file.location : '';
         
         // Support submitting a URL directly (from scrape-link feature)
@@ -154,8 +155,8 @@ router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) 
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
 
         const result = await db.query(
-            'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl, safeCat, brand || '', 100, is_new_arrival === 'true' || is_new_arrival === true]
+            'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival, specifications) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
+            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl, safeCat, brand || '', 100, is_new_arrival === 'true' || is_new_arrival === true, specifications ? JSON.stringify(specifications) : null]
         );
         res.status(201).json(result.rows[0]);
     } catch (err) {
@@ -167,7 +168,7 @@ router.post('/', verifyToken, isAdmin, upload.single('image'), async (req, res) 
 router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time } = req.body;
+        const { name, price_vc, description, category, brand, is_new_arrival, original_price, delivery_location, delivery_time, specifications } = req.body;
         const currentRes = await db.query('SELECT image_url FROM products WHERE id = $1', [id]);
         if (currentRes.rows.length === 0) return res.status(404).json({ message: 'Product not found' });
         let imageUrl = currentRes.rows[0].image_url;
@@ -185,8 +186,8 @@ router.put('/:id', verifyToken, isAdmin, upload.single('image'), async (req, res
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
 
         const result = await db.query(
-            'UPDATE products SET name = $1, description = $2, price_vc = $3, original_price = $4, delivery_location = $5, delivery_time = $6, image_url = $7, category = $8, brand = $9, is_new_arrival = $10 WHERE id = $11 RETURNING *',
-            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl || '', safeCat, brand || '', is_new_arrival === 'true' || is_new_arrival === true, id]
+            'UPDATE products SET name = $1, description = $2, price_vc = $3, original_price = $4, delivery_location = $5, delivery_time = $6, image_url = $7, category = $8, brand = $9, is_new_arrival = $10, specifications = $11 WHERE id = $12 RETURNING *',
+            [name, description || '', price_vc, original_price || null, delivery_location || 'Alliance University', delivery_time || '7 Days', imageUrl || '', safeCat, brand || '', is_new_arrival === 'true' || is_new_arrival === true, specifications ? JSON.stringify(specifications) : null, id]
         );
         res.json(result.rows[0]);
     } catch (err) {

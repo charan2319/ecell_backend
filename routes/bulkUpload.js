@@ -415,11 +415,56 @@ async function scrapeProductData(url, maxImages = 4) {
 
     console.log(`[Scraper] Images found: ${images.length}`);
 
+    // ━━━━━━━ BRAND SCRAPING ━━━━━━━
+    let scrapedBrand = detectBrand(scrapedTitle) || '';
+    if (!scrapedBrand) {
+      scrapedBrand = $('#bylineInfo').text().replace(/Visit the\s+|Store/gi, '').trim() ||
+                     $('.po-brand .a-span9').text().trim() ||
+                     '';
+    }
+
+    // ━━━━━━━ SPECIFICATIONS SCRAPING (Amazon Tech Specs) ━━━━━━━
+    const specifications = [];
+    // 1. Technical Details Table
+    $('#productDetails_techSpec_section_1 tr').each((i, el) => {
+      const label = $(el).find('th').text().trim();
+      const value = $(el).find('td').text().trim();
+      if (label && value) specifications.push({ label, value });
+    });
+    // 2. Product Information List (Alternative)
+    if (specifications.length === 0) {
+      $('#detailBullets_feature_div li').each((i, el) => {
+        const text = $(el).text().trim();
+        if (text.includes(':')) {
+          const parts = text.split(':').map(s => s.trim().replace(/\u200e/g, ''));
+          if (parts.length >= 2) {
+            specifications.push({ label: parts[0], value: parts[1] });
+          }
+        }
+      });
+    }
+
+    // ━━━━━━━ FEATURE BULLETS SCRAPING (About this item) ━━━━━━━
+    let scrapedDescription = '';
+    const bullets = [];
+    $('#feature-bullets li:not(.a-list-item-separator)').each((i, el) => {
+      const text = $(el).find('span.a-list-item').text().trim();
+      if (text && !text.includes('Check your device compatibility')) {
+        bullets.push(text);
+      }
+    });
+    if (bullets.length > 0) {
+      scrapedDescription = bullets.join('\n\n');
+    }
+
   return { 
     images: images.slice(0, maxImages), 
     price: scrapedPrice, 
     title: scrapedTitle,
-    category: scrapedCategory 
+    category: scrapedCategory,
+    brand: scrapedBrand,
+    specifications,
+    description: scrapedDescription
   };
 }
 
@@ -615,8 +660,8 @@ router.post('/bulk-upload', verifyToken, isAdmin, excelUpload.single('file'), as
         await db.query('INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [safeCat]);
 
         const insertResult = await db.query(
-          'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-          [productName, '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, safeCat, detectedBrand, 100, false]
+          'INSERT INTO products (name, description, price_vc, original_price, delivery_location, delivery_time, image_url, category, brand, stock, is_new_arrival, specifications) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
+          [productName, scraped.description || '', finalPrice, scrapedPriceFromLink > 0 ? scrapedPriceFromLink : null, 'Alliance University', '7 Days', mainImage, safeCat, scraped.brand || detectedBrand, 100, false, scraped.specifications ? JSON.stringify(scraped.specifications) : null]
         );
         const productId = insertResult.rows[0].id;
 
@@ -717,8 +762,10 @@ router.post('/scrape-link', verifyToken, isAdmin, async (req, res) => {
     res.json({
       title: scraped.title || '',
       price: scraped.price || 0,
-       category: suggestedCategory,
-      brand: detectedBrand,
+      category: suggestedCategory,
+      brand: scraped.brand || detectedBrand,
+      description: scraped.description || '',
+      specifications: scraped.specifications || [],
       originalImages: scraped.images,
       imageUrls: s3ImageUrls,
     });
