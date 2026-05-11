@@ -170,9 +170,10 @@ router.get('/user/:id', verifyToken, async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized access to history.' });
         }
         const data = await db.query(`
-            SELECT id, total_vc, status, created_at 
+            SELECT id, total_vc, status, delivery_location, created_at 
             FROM orders 
             WHERE user_id = $1 
+            ORDER BY id DESC
         `, [id]);
         res.json(data.rows);
     } catch (err) {
