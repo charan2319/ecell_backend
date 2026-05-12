@@ -68,7 +68,7 @@ router.post('/magic-link', async (req, res) => {
     try {
         const { email } = req.body;
         if (!email.toLowerCase().endsWith('alliance.edu.in')) {
-          return res.status(400).json({ message: 'Must use an authorized Alliance email (e.g. @alliance.edu.in or @ced.alliance.edu.in).' });
+          return res.status(400).json({ message: 'Must use an authorized Alliance email (e.g. @alliance.edu.in, @ced.alliance.edu.in or @stu.alliance.edu.in).' });
         }
 
         const magicToken = jwt.sign(
@@ -153,9 +153,9 @@ router.post('/send-otp', async (req, res) => {
 
         // Restrict to college domains
         const domain = email.toLowerCase().split('@')[1];
-        const allowedDomains = ['alliance.edu.in', 'ced.alliance.edu.in'];
+        const allowedDomains = ['alliance.edu.in', 'ced.alliance.edu.in', 'stu.alliance.edu.in'];
         if (!allowedDomains.includes(domain)) {
-            return res.status(400).json({ message: 'Only Alliance University emails are allowed (@alliance.edu.in or @ced.alliance.edu.in).' });
+            return res.status(400).json({ message: 'Only Alliance University emails are allowed (@alliance.edu.in, @ced.alliance.edu.in or @stu.alliance.edu.in).' });
         }
 
         // Generate 4 digit OTP to match design
