@@ -15,12 +15,14 @@ const productRoutes = require('./routes/products');
 const orderRoutes = require('./routes/orders');
 const extraRoutes = require('./routes/extras');
 const bulkUploadRoutes = require('./routes/bulkUpload');
+const addressRoutes = require('./routes/addresses');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/products', productRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api', extraRoutes);
 app.use('/api/products', bulkUploadRoutes);
+app.use('/api/addresses', addressRoutes);
 
 app.get('/', (req, res) => {
     res.send("Founder's Mart Backend Running");
